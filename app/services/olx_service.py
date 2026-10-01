@@ -367,33 +367,25 @@ async def _take_screenshot(url, save_path):
         "var s=document.createElement('style');"
         "s.innerHTML=css;document.head.appendChild(s);"
     )
-    # screenshot_fullpage=true gives a PORTRAIT scroll of the whole page
-    # instead of ZenRows' default landscape viewport capture (1920x897,
-    # 2560x1321, 2840x1536 — all seen on real runs, all ignored our
-    # window_width setting). The user's own template OLX screenshot is
-    # portrait at aspect 0.87 and that is the shape they need in Word.
-    # smart_crop_listing then cuts off the ad block at the bottom to keep
-    # just the listing card.
+    # device="mobile" forces ZenRows to use an iPhone User-Agent, which
+    # makes OLX serve its MOBILE layout. The mobile layout is portrait by
+    # nature (single column: photo → title → price → specs → description).
+    # This is the only way to get a portrait aspect — ZenRows ignores
+    # window_width, screenshot_fullpage and js_instructions.evaluate for
+    # OLX anti-bot bypass, but it does honor device=mobile.
     #
-    # window_width=1200 so the desktop layout renders (OLX's right-side
-    # price panel collapses below ~1024px into a mobile layout, which
-    # looks different from the user's own screenshots).
+    # Mobile viewport is ~400x900 by default (iPhone-sized); the capture
+    # itself will be a scrolled page in that frame, giving an aspect
+    # near 0.45 — tall portrait, close to the user's own template screenshot.
     params = {
         "apikey": settings.zenrows_api_key,
         "url": url,
         "screenshot_fullpage": "true",
         "screenshot_format": "jpeg",
         "screenshot_quality": 92,
-        "wait": 800,
-        "window_width": 1200,
-        "window_height": 900,
+        "wait": 2500,
         "js_render": "true",
-        "device": "desktop",
-        "js_instructions": json.dumps([
-            {"wait": 1200},
-            {"evaluate": hide_css},
-            {"wait": 1800},
-        ]),
+        "device": "mobile",
     }
     try:
         async with httpx.AsyncClient(timeout=60) as client:

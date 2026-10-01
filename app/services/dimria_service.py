@@ -362,10 +362,11 @@ async def take_screenshot(url: str, save_path: str) -> bool:
             "var s=document.createElement('style');"
             "s.innerHTML=css;document.head.appendChild(s);"
         )
-        # screenshot_fullpage=true for portrait aspect matching the
-        # user's own template (DIM.RIA listing is ~0.86 aspect portrait).
-        # Primary path is local Playwright full_page=True; this is only
-        # the fallback.
+        # device="mobile" for portrait aspect: DIM.RIA mobile layout is
+        # a single-column vertical scroll (photo→title→price→specs→desc),
+        # which matches the user's template screenshot (765x887, 0.86 aspect).
+        # ZenRows ignores window_width and screenshot_fullpage params for
+        # these sites, but device=mobile does flip the layout.
         try:
             async with httpx.AsyncClient(timeout=60, headers=_REQUEST_HEADERS) as client:
                 response = await client.get("https://api.zenrows.com/v1/", params={
@@ -373,14 +374,8 @@ async def take_screenshot(url: str, save_path: str) -> bool:
                     "screenshot_fullpage": "true",
                     "screenshot_format": "jpeg",
                     "screenshot_quality": 92,
-                    "js_render": "true", "wait": 800,
-                    "window_width": 1200, "window_height": 900,
-                    "device": "desktop",
-                    "js_instructions": json.dumps([
-                        {"wait": 1200},
-                        {"evaluate": hide_css},
-                        {"wait": 1800},
-                    ]),
+                    "js_render": "true", "wait": 2500,
+                    "device": "mobile",
                 })
                 response.raise_for_status()
                 Path(save_path).parent.mkdir(parents=True, exist_ok=True)
