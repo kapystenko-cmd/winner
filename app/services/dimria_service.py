@@ -376,14 +376,18 @@ async def take_screenshot(url: str, save_path: str) -> bool:
         # listing (photo + title + price + specs + description + credit
         # offer), confirmed by inspecting their HTML. Fallback to
         # "#descriptionBlock" if that selector is renamed.
+        #
+        # IMPORTANT: screenshot_selector and screenshot_fullpage are
+        # MUTUALLY EXCLUSIVE per ZenRows API (returns HTTP 400 REQS004).
+        # When a selector is set, do NOT also pass fullpage. When no
+        # selector is set, use fullpage and let smart_crop_listing trim.
         selector_dim = os.environ.get(
-            "DIMRIA_SCREENSHOT_SELECTOR", ".main__content, #descriptionBlock, main"
+            "DIMRIA_SCREENSHOT_SELECTOR", ""
         ).strip()
         try:
             async with httpx.AsyncClient(timeout=60, headers=_REQUEST_HEADERS) as client:
                 _dim_params = {
                     "apikey": settings.zenrows_api_key, "url": url,
-                    "screenshot_fullpage": "true",
                     "screenshot_format": "jpeg",
                     "screenshot_quality": 92,
                     "js_render": "true", "wait": 2500,
@@ -391,6 +395,8 @@ async def take_screenshot(url: str, save_path: str) -> bool:
                 if selector_dim:
                     _dim_params["screenshot_selector"] = selector_dim
                     print(f"DIM.RIA screenshot: using selector '{selector_dim}'")
+                else:
+                    _dim_params["screenshot_fullpage"] = "true"
                 response = await client.get("https://api.zenrows.com/v1/", params=_dim_params)
                 response.raise_for_status()
                 Path(save_path).parent.mkdir(parents=True, exist_ok=True)

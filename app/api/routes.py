@@ -193,7 +193,12 @@ async def _capture_selected_analog_screenshots(report: Report, analogs: list[Ana
     results = []
     for candidate in analogs:
         results.append(await capture(candidate))
-        await asyncio.sleep(1.5)
+        # 2.5s pause between captures. Each ZenRows screenshot takes
+        # ~15-30 s itself (fullpage rendering), but sometimes fails
+        # fast with HTTP 400/429 — the pause gives the provider room
+        # to breathe between failed-fast retries and prevents the
+        # concurrency gate from firing all captures in the same second.
+        await asyncio.sleep(2.5)
     created = sum(bool(value) for value in results)
     journal = dict(report.search_journal or {})
     journal["final_screenshots"] = {

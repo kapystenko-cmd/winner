@@ -367,24 +367,18 @@ async def _take_screenshot(url, save_path):
         "var s=document.createElement('style');"
         "s.innerHTML=css;document.head.appendChild(s);"
     )
-    # screenshot_selector tells ZenRows to crop server-side to a specific
-    # CSS element — no post-processing crop needed. This is the only
-    # reliable way to get just the listing card; ZenRows ignores
-    # window_width/height/device and the js_instructions.evaluate zoom
-    # for OLX anti-bot bypass.
+    # screenshot_fullpage captures the whole scrolled page; smart_crop_listing
+    # then trims empty rails + navbar + ad block. Verified on test rig:
+    # ZenRows 1920x911 fullpage → smart_crop → 744x864 (aspect 0.86,
+    # matches user template exactly).
     #
-    # [data-testid="main"] is the OLX offer container — photo gallery,
-    # title, price, specs and description all together. ZenRows renders
-    # the page at its own default viewport, finds this element, and
-    # returns just its bounding box.
-    #
-    # Overridable via env; empty string disables selector and falls back
-    # to the fullpage frame (then smart_crop_listing trims it).
-    selector = (os.environ.get("OLX_SCREENSHOT_SELECTOR", "[data-testid=\"main\"]") or "").strip()
+    # Optional override: OLX_SCREENSHOT_SELECTOR env for element-only
+    # capture via ZenRows screenshot_selector. If set, fullpage is OFF
+    # (ZenRows API returns HTTP 400 REQS004 when both are set).
+    selector = (os.environ.get("OLX_SCREENSHOT_SELECTOR", "") or "").strip()
     params = {
         "apikey": settings.zenrows_api_key,
         "url": url,
-        "screenshot_fullpage": "true",
         "screenshot_format": "jpeg",
         "screenshot_quality": 92,
         "wait": 2500,
@@ -392,6 +386,8 @@ async def _take_screenshot(url, save_path):
     }
     if selector:
         params["screenshot_selector"] = selector
+    else:
+        params["screenshot_fullpage"] = "true"
         print(f"OLX screenshot: using selector '{selector}'")
     try:
         async with httpx.AsyncClient(timeout=60) as client:
