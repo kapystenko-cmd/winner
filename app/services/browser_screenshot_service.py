@@ -131,17 +131,36 @@ def smart_crop_listing(image_path, source: str = "") -> tuple:
         bottom = min(h, bottom_s * scale)
 
         # OLX-specific: the ad blocks ("Watsons", "PropellerAds",
-        # "Рекомендовані оголошення") sit below the main listing card and
-        # ARE visually busy, so the pure variance scan can keep them. For
-        # OLX, additionally cap the kept height at a sensible fraction so
-        # the useful card dominates the Word page. Measured against the
-        # user's template screenshots: the real listing (gallery, specs,
-        # description, right column) fits inside the top ~60-70% of the
-        # typical OLX capture before the ad block starts. Keep 65%.
+        # "Рекомендовані оголошення") sit below the main listing card.
+        # Even when they're still loading (grey placeholder squares), the
+        # pixel variance scan sees them as content and keeps them. Also,
+        # ZenRows sometimes returns the whole page in one wide landscape
+        # frame (2560x1321, 1920x1080 seen on real runs) where the real
+        # listing takes only the top ~55-65% of the vertical space.
+        #
+        # Hard cap: for OLX, bottom edge is at most 60% of the kept
+        # frame height. Measured on real ZenRows OLX capture
+        # (2560x1321 for "Монастирище"): the real listing (fото +
+        # ціна + характеристики + опис + "зв'язатися") ends at ~y=832,
+        # i.e. 63% of total height; everything below is empty padding
+        # with placeholder squares. 60% is a safe cap that keeps the
+        # whole listing on all tested frames and never bleeds into the
+        # ad zone.
+        #
+        # DIM.RIA has no such ad block below the listing; the viewport
+        # just goes blank orange or white, which already fails the
+        # variance check. So this cap applies only to OLX.
         if source and "olx" in source.lower():
-            max_bottom = top + int((bottom - top) * 0.65)
-            if bottom > max_bottom:
-                bottom = max_bottom
+            full_h = bottom - top
+            max_h = int(full_h * 0.60)
+            # Also enforce a minimum height floor: never cut below 30%
+            # of original frame height (otherwise a short frame could
+            # end up as a thin strip).
+            with Image.open(image_path) as _im:
+                orig_h = _im.size[1]
+            max_h = max(max_h, int(orig_h * 0.30))
+            if (bottom - top) > max_h:
+                bottom = top + max_h
 
         return (int(left), int(top), int(right), int(bottom))
 

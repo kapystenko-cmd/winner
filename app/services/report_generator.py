@@ -1599,7 +1599,7 @@ async def generate_full_word_package(report, user, analogs, include_screenshots=
                 # screenshot_service), so no side-trim is needed here.
                 # Insert at full available page width; max_height_cm is the
                 # safety net for any unusually tall capture.
-                add_image(display_image, "Картка оголошення", width=Cm(17), max_height_cm=24)
+                add_image(display_image, "Картка оголошення", width=Cm(17), max_height_cm=10)
 
         if entries:
             # Only force a fresh page here if something (photos/screenshots)
