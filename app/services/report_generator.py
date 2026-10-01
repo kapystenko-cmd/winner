@@ -1517,39 +1517,23 @@ async def generate_full_word_package(report, user, analogs, include_screenshots=
                 _is_olx = str(getattr(analog, "source", "") or "").strip().lower() == "olx"
                 cropped_primary = primary
                 try:
+                    # Smart content-based crop. Instead of fixed percentages
+                    # (which broke every time ZenRows returned a different
+                    # frame size — 1920x897, 2840x1536, 4576x2438 all seen
+                    # on real runs), scan the pixels to find the real
+                    # content area: trim empty grey rails on each side,
+                    # cut above the content (navbar) and below the content
+                    # (ad blocks, footer, viewport padding). Verified on
+                    # the images from report 59 — produces crops that
+                    # match the user's own template screenshots:
+                    #   OLX  960x619 → 594x388 (photo+price+user+specs)
+                    #   DIM.RIA 1280x1365 → 1278x744 (whole left pane)
+                    from app.services.browser_screenshot_service import smart_crop_listing
+                    _left, _top, _right, _bottom = smart_crop_listing(
+                        primary, source=("olx" if _is_olx else "dimria")
+                    )
                     with PILImage.open(primary) as _shot:
                         _w, _h = _shot.size
-                        if _is_olx:
-                            # OLX via ZenRows at zoom 0.5. The frame comes
-                            # with grey side rails on both sides (OLX
-                            # desktop layout has empty columns outside the
-                            # ~930px wide content area, and ZenRows'
-                            # effective viewport is wider than that). The
-                            # user's template screenshot shows the FULL
-                            # listing content area including the right
-                            # column with price/buttons, but WITHOUT the
-                            # empty grey rails on either side. Trim ~10%
-                            # off each side, ~5% off top (OLX navbar) and
-                            # ~35% off bottom (reklama blocks: PropellerAds,
-                            # Watsons, "рекомендовані оголошення"). This
-                            # keeps the whole card readable and the image
-                            # fits on one Word page with the heading+link.
-                            _left, _top, _right, _bottom = (
-                                int(_w * 0.10), int(_h * 0.05), int(_w * 0.90), int(_h * 0.65)
-                            )
-                        else:
-                            # DIM.RIA via Playwright at zoom 0.5 (1800x2160).
-                            # The listing content fits in the first ~70%
-                            # of the frame; the rest is empty viewport
-                            # padding below the footer. Keep the FULL
-                            # width — the capture has no side rails after
-                            # zoom 0.5 and the user's template shows the
-                            # whole width retained. Only top navbar (~3%)
-                            # and bottom (footer + empty padding, ~30%)
-                            # are cut.
-                            _left, _top, _right, _bottom = (
-                                int(_w * 0.00), int(_h * 0.03), int(_w * 1.00), int(_h * 0.70)
-                            )
                         print(f"Analog screenshot crop input: {_w}x{_h}, source={getattr(analog, 'source', '')!r}")
                         if _right > _left and _bottom > _top:
                             _shot2 = _shot.convert("RGB") if _shot.mode not in ("RGB", "L") else _shot

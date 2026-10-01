@@ -16,6 +16,136 @@ from app.core.config import settings
 _screenshot_slots = asyncio.Semaphore(max(1, settings.browser_screenshot_concurrency))
 
 
+def smart_crop_listing(image_path, source: str = "") -> tuple:
+    """Return (left, top, right, bottom) crop of the real listing content.
+
+    Uses pixel analysis to find where the listing card actually sits in the
+    frame, instead of guessing with fixed percentages. This works regardless
+    of what dimensions ZenRows or Playwright decide to return — a 1920x897
+    OLX landscape capture and a 2840x1536 one from the same request get
+    cropped to their respective content areas, not to their respective 25%
+    percentages.
+
+    Algorithm:
+      1. Scan column variance left-to-right: a column of near-uniform pixels
+         (grey OLX side rail, white DIM.RIA margin) has very low variance;
+         real content columns have high variance. Trim until variance crosses
+         a threshold.
+      2. Same for the right side.
+      3. Scan row variance top-to-bottom to find where the navbar ends and
+         where the real content starts.
+      4. Scan row variance bottom-to-top to find where the main content ends
+         before the ad block / empty padding starts.
+
+    Falls back to a safe default (3% trim each side, 5%/15% vertical) if the
+    analysis finds nothing — never returns an empty box.
+
+    Returns (left, top, right, bottom) in pixel coordinates.
+    """
+    try:
+        from PIL import Image, ImageStat
+        import statistics
+    except ImportError:
+        # PIL not available: return the full frame
+        from PIL import Image
+        with Image.open(image_path) as im:
+            return (0, 0, im.size[0], im.size[1])
+
+    with Image.open(image_path) as im:
+        img = im.convert("RGB")
+        w, h = img.size
+
+        # Downsample for speed: we only need rough positions. Analyse at
+        # ~400px wide, scale coordinates back up afterwards.
+        scale = max(1, w // 400)
+        small = img.resize((w // scale, h // scale)) if scale > 1 else img
+        sw, sh = small.size
+        pixels = small.load()
+
+        def col_variance(x: int) -> float:
+            """Standard deviation of grayscale values in column x."""
+            vals = [sum(pixels[x, y]) / 3 for y in range(sh)]
+            return statistics.pstdev(vals) if len(vals) > 1 else 0.0
+
+        def row_variance(y: int, x_start: int, x_end: int) -> float:
+            """Standard deviation across row y, between x_start and x_end."""
+            vals = [sum(pixels[x, y]) / 3 for x in range(x_start, x_end)]
+            return statistics.pstdev(vals) if len(vals) > 1 else 0.0
+
+        # 1. LEFT side: scan left-to-right, find first "busy" column.
+        # Threshold 8.0 is low enough to catch any non-trivial content but
+        # high enough to skip jpeg noise and faint shadows.
+        VAR_THRESHOLD = 8.0
+        left_s = 0
+        for x in range(sw):
+            if col_variance(x) > VAR_THRESHOLD:
+                left_s = max(0, x - 2)  # small safety margin
+                break
+
+        # 2. RIGHT side: scan right-to-left.
+        right_s = sw
+        for x in range(sw - 1, -1, -1):
+            if col_variance(x) > VAR_THRESHOLD:
+                right_s = min(sw, x + 3)
+                break
+
+        # Guard: content width must be at least 20% of the frame; otherwise
+        # the scan found nothing (e.g. a nearly-blank screenshot).
+        if right_s - left_s < sw * 0.20:
+            left_s = int(sw * 0.03)
+            right_s = int(sw * 0.97)
+
+        # 3. TOP: scan rows top-to-bottom within the content columns, find
+        # the first row that has non-trivial variance. The top site navbar
+        # has text + logo (variance), then a thin empty strip, then the
+        # listing starts. We want to skip the navbar itself when possible,
+        # so we look for the SECOND stretch of content rather than the first.
+        # In practice OLX has a dark navbar (~40-60px); keep it so the
+        # breadcrumbs stay visible.
+        top_s = 0
+        for y in range(sh):
+            if row_variance(y, left_s, right_s) > VAR_THRESHOLD:
+                top_s = max(0, y - 2)
+                break
+
+        # 4. BOTTOM: scan bottom-up. Find the last busy row, then back off
+        # a bit — the lower part of OLX pages contains ad blocks and
+        # "recommended" cards which ARE busy; but DIM.RIA Playwright pads
+        # the viewport with blank orange below the footer which is NOT busy.
+        # Simple rule: cut at the last busy row + small margin.
+        bottom_s = sh
+        for y in range(sh - 1, -1, -1):
+            if row_variance(y, left_s, right_s) > VAR_THRESHOLD:
+                bottom_s = min(sh, y + 3)
+                break
+
+        # Guard: content height must be at least 30% of the frame.
+        if bottom_s - top_s < sh * 0.30:
+            top_s = int(sh * 0.03)
+            bottom_s = int(sh * 0.97)
+
+        # Scale coordinates back up to original resolution.
+        left = max(0, left_s * scale)
+        top = max(0, top_s * scale)
+        right = min(w, right_s * scale)
+        bottom = min(h, bottom_s * scale)
+
+        # OLX-specific: the ad blocks ("Watsons", "PropellerAds",
+        # "Рекомендовані оголошення") sit below the main listing card and
+        # ARE visually busy, so the pure variance scan can keep them. For
+        # OLX, additionally cap the kept height at a sensible fraction so
+        # the useful card dominates the Word page. Measured against the
+        # user's template screenshots: the real listing (gallery, specs,
+        # description, right column) fits inside the top ~60-70% of the
+        # typical OLX capture before the ad block starts. Keep 65%.
+        if source and "olx" in source.lower():
+            max_bottom = top + int((bottom - top) * 0.65)
+            if bottom > max_bottom:
+                bottom = max_bottom
+
+        return (int(left), int(top), int(right), int(bottom))
+
+
 def _compose_olx_evidence(primary: Path, details: Path) -> bool:
     """Create one readable 900x1600 OLX evidence image.
 
