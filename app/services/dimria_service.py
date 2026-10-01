@@ -336,19 +336,26 @@ async def _get_detail(item_id: int | str, client: httpx.AsyncClient) -> dict[str
 async def take_screenshot(url: str, save_path: str) -> bool:
     """Capture one DIM.RIA listing card for inclusion in a report.
 
-    Pipeline (one simple path, no Gemini, no dead crop import):
-      Local Playwright with zoom 0.5 at 900x1600 ->
-      ZenRows screenshot endpoint as fallback (JPEG, zoom 0.5, 900x1600) ->
-      ScraperAPI as last resort.
-    Percentage crop is applied once, centrally, in report_generator.py.
+    Pipeline:
+      ZenRows screenshot endpoint (JPEG, portrait DIM.RIA mobile-ish
+      layout) -> local Playwright as fallback -> ScraperAPI last resort.
+    Percentage crop is applied once, centrally, in report_generator.py
+    via smart_crop_listing.
+
+    ZenRows first (previously Playwright first): the ZenRows capture
+    at DIM.RIA produces a 1920x921 landscape frame whose middle
+    column IS the listing card at ~0.86 aspect, and smart_crop_listing
+    trims the empty rails perfectly on it. Playwright returned a
+    full_page=True 1800xN capture of the FULL desktop layout which has
+    no empty rails to trim (content runs edge-to-edge in desktop
+    layout), so smart_crop produced a landscape frame. The ZenRows
+    output matches the user's template screenshots exactly, so put it
+    first.
     """
     import os
     from pathlib import Path
 
     from app.services.browser_screenshot_service import take_browser_screenshots
-    # Local Chromium first — unlike OLX, DIM.RIA does not block the server IP.
-    if await take_browser_screenshots(url, save_path, single_frame=True, extra_wait_ms=2500):
-        return True
 
     if settings.zenrows_api_key:
         hide_css = (
@@ -399,6 +406,15 @@ async def take_screenshot(url: str, save_path: str) -> bool:
             print(f"Screenshot ZR error: HTTP {error.response.status_code} for url={error.request.url} body={body_snippet!r}")
         except Exception as error:
             print(f"Screenshot ZR error: {type(error).__name__}: {error!r}")
+
+    # Fallback: local Playwright. DIM.RIA doesn't block the server IP,
+    # so a direct Chromium visit works, but the resulting frame has
+    # desktop-layout content running edge-to-edge (no empty rails for
+    # smart_crop to trim). The output is still useful as a last-resort
+    # evidence image when ZenRows is down or quota-exhausted.
+    if await take_browser_screenshots(url, save_path, single_frame=True, extra_wait_ms=2500):
+        print("DIM.RIA screenshot: local Playwright fallback: " + url)
+        return True
 
     scraper_key = getattr(settings, "scraper_api_key", "") or os.environ.get("SCRAPER_API_KEY", "")
     if scraper_key and getattr(settings, "scraperapi_enabled", True):
