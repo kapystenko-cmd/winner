@@ -130,37 +130,26 @@ def smart_crop_listing(image_path, source: str = "") -> tuple:
         right = min(w, right_s * scale)
         bottom = min(h, bottom_s * scale)
 
-        # OLX-specific: the ad blocks ("Watsons", "PropellerAds",
-        # "Рекомендовані оголошення") sit below the main listing card.
-        # Even when they're still loading (grey placeholder squares), the
-        # pixel variance scan sees them as content and keeps them. Also,
-        # ZenRows sometimes returns the whole page in one wide landscape
-        # frame (2560x1321, 1920x1080 seen on real runs) where the real
-        # listing takes only the top ~55-65% of the vertical space.
+        # Portrait aspect enforcement.
+        # Both OLX and DIM.RIA are now captured with screenshot_fullpage=true
+        # (ZenRows) or full_page=True (Playwright), which produces a tall
+        # scroll of the entire page. The user's own template screenshots
+        # (OLX 727x837, DIM.RIA 765x887, both ~0.87 aspect portrait) only
+        # include the listing CARD, not the reklama blocks or related
+        # listings that fill the rest of a real page.
         #
-        # Hard cap: for OLX, bottom edge is at most 60% of the kept
-        # frame height. Measured on real ZenRows OLX capture
-        # (2560x1321 for "Монастирище"): the real listing (fото +
-        # ціна + характеристики + опис + "зв'язатися") ends at ~y=832,
-        # i.e. 63% of total height; everything below is empty padding
-        # with placeholder squares. 60% is a safe cap that keeps the
-        # whole listing on all tested frames and never bleeds into the
-        # ad zone.
-        #
-        # DIM.RIA has no such ad block below the listing; the viewport
-        # just goes blank orange or white, which already fails the
-        # variance check. So this cap applies only to OLX.
-        if source and "olx" in source.lower():
-            full_h = bottom - top
-            max_h = int(full_h * 0.60)
-            # Also enforce a minimum height floor: never cut below 30%
-            # of original frame height (otherwise a short frame could
-            # end up as a thin strip).
-            with Image.open(image_path) as _im:
-                orig_h = _im.size[1]
-            max_h = max(max_h, int(orig_h * 0.30))
-            if (bottom - top) > max_h:
-                bottom = top + max_h
+        # Rule: cap the kept height so the final aspect is at most ~0.75
+        # (height ≈ 1.33 × width). That matches the user's templates and
+        # keeps the Word insert on one page with heading+link above it.
+        # Everything cut off was ad/related/footer anyway.
+        kept_w = right - left
+        max_h_for_portrait = int(kept_w * 1.33)
+        if (bottom - top) > max_h_for_portrait:
+            bottom = top + max_h_for_portrait
+
+        # (OLX used to need a special 60% rule here when captures were
+        # landscape; with fullpage captures the portrait cap above handles
+        # both sources uniformly, so the OLX-only branch is removed.)
 
         return (int(left), int(top), int(right), int(bottom))
 
@@ -444,11 +433,12 @@ async def _take_browser_screenshots(
                     await page.wait_for_timeout(4000)
                 except Exception:
                     pass
-                # Viewport screenshot (not full_page): 900x1600 is the target
-                # frame. full_page produced tall unpredictable portraits that
-                # A4-rendered poorly (title + link + huge image split across
-                # 2 Word pages). See test_dimria_shots_v4.py results.
-                await page.screenshot(path=str(primary), full_page=False, timeout=60000)
+                # full_page=True — captures the entire scroll of the page
+                # as one tall portrait image, matching the shape of the
+                # user's own Chrome F11 + 50% zoom template screenshot
+                # (DIM.RIA listing is ~0.86 aspect portrait). smart_crop
+                # then trims empty bottom padding and side rails.
+                await page.screenshot(path=str(primary), full_page=True, timeout=60000)
                 # Retry once for suspiciously small captures. A cold Chromium
                 # can save a ~60-80 KB blank/spinner-only frame that passes
                 # the >1024 B guard but is unusable as evidence. A single
@@ -463,7 +453,7 @@ async def _take_browser_screenshots(
                         )
                         await page.wait_for_timeout(2500)
                         await page.screenshot(
-                            path=str(primary), full_page=False, timeout=60000
+                            path=str(primary), full_page=True, timeout=60000
                         )
                 except Exception as retry_error:
                     print("Browser screenshot retry skipped: " + str(retry_error))

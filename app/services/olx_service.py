@@ -367,28 +367,26 @@ async def _take_screenshot(url, save_path):
         "var s=document.createElement('style');"
         "s.innerHTML=css;document.head.appendChild(s);"
     )
-    # Viewport reverted to 900x1600 for OLX. Report 60 proved that at
-    # window_width=1800 ZenRows ignored our window_width AND our zoom:0.5
-    # CSS injection, returning a landscape 1920x897 frame of its own
-    # choosing (likely a hardcoded profile ZenRows uses when it has to
-    # bypass OLX's anti-bot). With window_width=900 ZenRows respects the
-    # setting and zoom:0.5 does fit the gallery+price+specs into a
-    # portrait frame — this is the configuration that produced the good
-    # screenshots in older working builds.
+    # screenshot_fullpage=true gives a PORTRAIT scroll of the whole page
+    # instead of ZenRows' default landscape viewport capture (1920x897,
+    # 2560x1321, 2840x1536 — all seen on real runs, all ignored our
+    # window_width setting). The user's own template OLX screenshot is
+    # portrait at aspect 0.87 and that is the shape they need in Word.
+    # smart_crop_listing then cuts off the ad block at the bottom to keep
+    # just the listing card.
     #
-    # Wait order: top-level wait small, then js_instructions wait before
-    # evaluate (let OLX hydrate), evaluate (apply zoom + hide cookies),
-    # wait again (let the browser reflow at the new scale before the
-    # snapshot is taken).
+    # window_width=1200 so the desktop layout renders (OLX's right-side
+    # price panel collapses below ~1024px into a mobile layout, which
+    # looks different from the user's own screenshots).
     params = {
         "apikey": settings.zenrows_api_key,
         "url": url,
-        "screenshot": "true",
+        "screenshot_fullpage": "true",
         "screenshot_format": "jpeg",
         "screenshot_quality": 92,
         "wait": 800,
-        "window_width": 900,
-        "window_height": 1600,
+        "window_width": 1200,
+        "window_height": 900,
         "js_render": "true",
         "device": "desktop",
         "js_instructions": json.dumps([

@@ -362,19 +362,19 @@ async def take_screenshot(url: str, save_path: str) -> bool:
             "var s=document.createElement('style');"
             "s.innerHTML=css;document.head.appendChild(s);"
         )
-        # Viewport reverted to 900x1600. OLX log showed ZenRows ignoring
-        # window_width when it had to bypass anti-bot; stay on the known-
-        # working size here. DIM.RIA's primary path is local Playwright
-        # (which does use 1800x2160), this is only the fallback.
+        # screenshot_fullpage=true for portrait aspect matching the
+        # user's own template (DIM.RIA listing is ~0.86 aspect portrait).
+        # Primary path is local Playwright full_page=True; this is only
+        # the fallback.
         try:
             async with httpx.AsyncClient(timeout=60, headers=_REQUEST_HEADERS) as client:
                 response = await client.get("https://api.zenrows.com/v1/", params={
                     "apikey": settings.zenrows_api_key, "url": url,
-                    "screenshot": "true",
+                    "screenshot_fullpage": "true",
                     "screenshot_format": "jpeg",
                     "screenshot_quality": 92,
                     "js_render": "true", "wait": 800,
-                    "window_width": 900, "window_height": 1600,
+                    "window_width": 1200, "window_height": 900,
                     "device": "desktop",
                     "js_instructions": json.dumps([
                         {"wait": 1200},
