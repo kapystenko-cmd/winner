@@ -1,0 +1,16 @@
+venv/
+__pycache__/
+*.pyc
+uploads/
+screenshots/
+reports/
+outputs/
+*.log
+.env
+.env.*
+!.env.example
+*.bak
+*.bak-*
+*.bak.*
+curl_test.*
+test_output/
