@@ -367,16 +367,20 @@ async def _take_screenshot(url, save_path):
         "var s=document.createElement('style');"
         "s.innerHTML=css;document.head.appendChild(s);"
     )
-    # device="mobile" forces ZenRows to use an iPhone User-Agent, which
-    # makes OLX serve its MOBILE layout. The mobile layout is portrait by
-    # nature (single column: photo → title → price → specs → description).
-    # This is the only way to get a portrait aspect — ZenRows ignores
-    # window_width, screenshot_fullpage and js_instructions.evaluate for
-    # OLX anti-bot bypass, but it does honor device=mobile.
+    # screenshot_selector tells ZenRows to crop server-side to a specific
+    # CSS element — no post-processing crop needed. This is the only
+    # reliable way to get just the listing card; ZenRows ignores
+    # window_width/height/device and the js_instructions.evaluate zoom
+    # for OLX anti-bot bypass.
     #
-    # Mobile viewport is ~400x900 by default (iPhone-sized); the capture
-    # itself will be a scrolled page in that frame, giving an aspect
-    # near 0.45 — tall portrait, close to the user's own template screenshot.
+    # [data-testid="main"] is the OLX offer container — photo gallery,
+    # title, price, specs and description all together. ZenRows renders
+    # the page at its own default viewport, finds this element, and
+    # returns just its bounding box.
+    #
+    # Overridable via env; empty string disables selector and falls back
+    # to the fullpage frame (then smart_crop_listing trims it).
+    selector = (os.environ.get("OLX_SCREENSHOT_SELECTOR", "[data-testid=\"main\"]") or "").strip()
     params = {
         "apikey": settings.zenrows_api_key,
         "url": url,
@@ -385,8 +389,10 @@ async def _take_screenshot(url, save_path):
         "screenshot_quality": 92,
         "wait": 2500,
         "js_render": "true",
-        "device": "mobile",
     }
+    if selector:
+        params["screenshot_selector"] = selector
+        print(f"OLX screenshot: using selector '{selector}'")
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             response = await client.get("https://api.zenrows.com/v1/", params=params)

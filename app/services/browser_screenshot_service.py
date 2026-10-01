@@ -130,26 +130,22 @@ def smart_crop_listing(image_path, source: str = "") -> tuple:
         right = min(w, right_s * scale)
         bottom = min(h, bottom_s * scale)
 
-        # Portrait aspect enforcement.
-        # Both OLX and DIM.RIA are now captured with screenshot_fullpage=true
-        # (ZenRows) or full_page=True (Playwright), which produces a tall
-        # scroll of the entire page. The user's own template screenshots
-        # (OLX 727x837, DIM.RIA 765x887, both ~0.87 aspect portrait) only
-        # include the listing CARD, not the reklama blocks or related
-        # listings that fill the rest of a real page.
-        #
-        # Rule: cap the kept height so the final aspect is at most ~0.75
-        # (height ≈ 1.33 × width). That matches the user's templates and
-        # keeps the Word insert on one page with heading+link above it.
-        # Everything cut off was ad/related/footer anyway.
+        # Portrait aspect cap — only applied when the capture is clearly
+        # a full-page scroll (very tall, very low aspect). When ZenRows'
+        # screenshot_selector was used server-side the frame already IS
+        # the listing card at its natural aspect (~0.7-1.0); capping it
+        # further would cut off the bottom of the card. Skip the cap
+        # when aspect is already reasonable.
         kept_w = right - left
-        max_h_for_portrait = int(kept_w * 1.33)
-        if (bottom - top) > max_h_for_portrait:
-            bottom = top + max_h_for_portrait
-
-        # (OLX used to need a special 60% rule here when captures were
-        # landscape; with fullpage captures the portrait cap above handles
-        # both sources uniformly, so the OLX-only branch is removed.)
+        kept_h = bottom - top
+        current_aspect = kept_w / max(1, kept_h)
+        # Apply the cap only when the image is TALLER than 1.5x width
+        # (aspect < 0.67) — that is a sign of a fullpage scroll with
+        # the ad block attached below the real listing.
+        if current_aspect < 0.67:
+            max_h_for_portrait = int(kept_w * 1.33)
+            if (bottom - top) > max_h_for_portrait:
+                bottom = top + max_h_for_portrait
 
         return (int(left), int(top), int(right), int(bottom))
 

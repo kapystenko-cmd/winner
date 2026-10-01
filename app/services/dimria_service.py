@@ -362,21 +362,29 @@ async def take_screenshot(url: str, save_path: str) -> bool:
             "var s=document.createElement('style');"
             "s.innerHTML=css;document.head.appendChild(s);"
         )
-        # device="mobile" for portrait aspect: DIM.RIA mobile layout is
-        # a single-column vertical scroll (photo→title→price→specs→desc),
-        # which matches the user's template screenshot (765x887, 0.86 aspect).
-        # ZenRows ignores window_width and screenshot_fullpage params for
-        # these sites, but device=mobile does flip the layout.
+        # screenshot_selector tells ZenRows to crop server-side to a
+        # specific CSS element — the DIM.RIA offer container. Reliable
+        # when ZenRows ignores window_width/device/fullpage for anti-bot
+        # bypass. ".main__content" is DIM.RIA's wrapper around the whole
+        # listing (photo + title + price + specs + description + credit
+        # offer), confirmed by inspecting their HTML. Fallback to
+        # "#descriptionBlock" if that selector is renamed.
+        selector_dim = os.environ.get(
+            "DIMRIA_SCREENSHOT_SELECTOR", ".main__content, #descriptionBlock, main"
+        ).strip()
         try:
             async with httpx.AsyncClient(timeout=60, headers=_REQUEST_HEADERS) as client:
-                response = await client.get("https://api.zenrows.com/v1/", params={
+                _dim_params = {
                     "apikey": settings.zenrows_api_key, "url": url,
                     "screenshot_fullpage": "true",
                     "screenshot_format": "jpeg",
                     "screenshot_quality": 92,
                     "js_render": "true", "wait": 2500,
-                    "device": "mobile",
-                })
+                }
+                if selector_dim:
+                    _dim_params["screenshot_selector"] = selector_dim
+                    print(f"DIM.RIA screenshot: using selector '{selector_dim}'")
+                response = await client.get("https://api.zenrows.com/v1/", params=_dim_params)
                 response.raise_for_status()
                 Path(save_path).parent.mkdir(parents=True, exist_ok=True)
                 Path(save_path).write_bytes(response.content)
