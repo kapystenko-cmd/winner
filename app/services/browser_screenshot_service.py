@@ -19,34 +19,40 @@ _screenshot_slots = asyncio.Semaphore(max(1, settings.browser_screenshot_concurr
 def smart_crop_listing(image_path, source: str = "") -> tuple:
     """Return (left, top, right, bottom) crop of the real listing content.
 
-    Uses pixel analysis to find where the listing card actually sits in the
-    frame, instead of guessing with fixed percentages. This works regardless
-    of what dimensions ZenRows or Playwright decide to return — a 1920x897
-    OLX landscape capture and a 2840x1536 one from the same request get
-    cropped to their respective content areas, not to their respective 25%
-    percentages.
+    Finds where the listing card actually sits in the frame, independent
+    of what dimensions ZenRows or Playwright decided to return (seen
+    on real runs: OLX 1920x968, 2560x1321, 2877x1449; DIM.RIA
+    3024x1547). ZenRows ignores window_width/screenshot_selector for
+    its anti-bot bypass, so Python-side cropping is the only place
+    this can happen reliably.
 
-    Algorithm:
-      1. Scan column variance left-to-right: a column of near-uniform pixels
-         (grey OLX side rail, white DIM.RIA margin) has very low variance;
-         real content columns have high variance. Trim until variance crosses
-         a threshold.
-      2. Same for the right side.
-      3. Scan row variance top-to-bottom to find where the navbar ends and
-         where the real content starts.
-      4. Scan row variance bottom-to-top to find where the main content ends
-         before the ad block / empty padding starts.
+    Strategy:
 
-    Falls back to a safe default (3% trim each side, 5%/15% vertical) if the
-    analysis finds nothing — never returns an empty box.
+    1. Build a per-column "content" signal: a column is CONTENT if its
+       pixels span a visible range of brightness (max-min > 15 across
+       its height, after excluding the top navbar). A column of plain
+       background has max-min ~2-5 (jpeg noise only).
 
-    Returns (left, top, right, bottom) in pixel coordinates.
+    2. Starting from the horizontal CENTER, walk outward both ways to
+       find the first run of 20+ consecutive BACKGROUND columns — that
+       marks the edge of the listing content.
+
+    3. Same for rows: skip the dark site navbar at the very top, then
+       walk inward to find top of listing. Walk up from the bottom to
+       find where listing content ends (before cookie banner / footer /
+       ad grid).
+
+    4. OLX & DIM.RIA both have a horizontal cookie banner at the very
+       bottom; detect it as a tall horizontal strip of near-uniform
+       colour and cut above it.
+
+    Returns (left, top, right, bottom) in pixel coordinates of the
+    ORIGINAL image.
     """
     try:
-        from PIL import Image, ImageStat
+        from PIL import Image
         import statistics
     except ImportError:
-        # PIL not available: return the full frame
         from PIL import Image
         with Image.open(image_path) as im:
             return (0, 0, im.size[0], im.size[1])
@@ -55,97 +61,139 @@ def smart_crop_listing(image_path, source: str = "") -> tuple:
         img = im.convert("RGB")
         w, h = img.size
 
-        # Downsample for speed: we only need rough positions. Analyse at
-        # ~400px wide, scale coordinates back up afterwards.
-        scale = max(1, w // 400)
+        # Downsample for speed; map back at the end.
+        scale = max(1, w // 500)
         small = img.resize((w // scale, h // scale)) if scale > 1 else img
         sw, sh = small.size
-        pixels = small.load()
+        px = small.load()
 
-        def col_variance(x: int) -> float:
-            """Standard deviation of grayscale values in column x."""
-            vals = [sum(pixels[x, y]) / 3 for y in range(sh)]
-            return statistics.pstdev(vals) if len(vals) > 1 else 0.0
+        def luma(x: int, y: int) -> int:
+            r, g, b = px[x, y]
+            # Rec. 601 luma
+            return (299 * r + 587 * g + 114 * b) // 1000
 
-        def row_variance(y: int, x_start: int, x_end: int) -> float:
-            """Standard deviation across row y, between x_start and x_end."""
-            vals = [sum(pixels[x, y]) / 3 for x in range(x_start, x_end)]
-            return statistics.pstdev(vals) if len(vals) > 1 else 0.0
+        # Pre-compute row signatures over the center 60% of width to
+        # avoid left/right rails/panels distorting them.
+        x_lo = int(sw * 0.20)
+        x_hi = int(sw * 0.80)
+        row_range = []
+        for y in range(sh):
+            vals = [luma(x, y) for x in range(x_lo, x_hi)]
+            row_range.append(max(vals) - min(vals))
 
-        # 1. LEFT side: scan left-to-right, find first "busy" column.
-        # Threshold 8.0 is low enough to catch any non-trivial content but
-        # high enough to skip jpeg noise and faint shadows.
-        VAR_THRESHOLD = 8.0
-        left_s = 0
+        BG_RANGE = 15
+
+        # Column signatures: look ONLY at the vertical middle 60% of
+        # the image. The top ~15% contains navbar/breadcrumbs which run
+        # edge-to-edge (dark bar + text); the bottom ~15% contains
+        # cookie banners / footer / ads which also run edge-to-edge.
+        # Both would make every column look "busy" even in the empty
+        # side rails. Using only y=15%-85% means empty side columns
+        # (plain background in the listing area) really look uniform.
+        y_start = int(sh * 0.15)
+        y_end = int(sh * 0.85)
+        col_range = []
         for x in range(sw):
-            if col_variance(x) > VAR_THRESHOLD:
-                left_s = max(0, x - 2)  # small safety margin
-                break
+            vals = [luma(x, y) for y in range(y_start, y_end)]
+            col_range.append(max(vals) - min(vals))
 
-        # 2. RIGHT side: scan right-to-left.
+        # Threshold: columns/rows with range <= BG_RANGE are considered
+        # background. 15 catches plain solid colours even with jpeg
+        # noise; real content with text or an image easily exceeds 50.
+        RUN_REQUIRED = max(3, sw // 60)  # ~1.5% of width
+
+        # LEFT edge: walk from the center LEFT. The first column where
+        # the following RUN_REQUIRED columns are ALL background marks
+        # the end of content on the left side.
+        center_x = sw // 2
+        left_s = 0
+        bg_run = 0
+        for x in range(center_x, -1, -1):
+            if col_range[x] <= BG_RANGE:
+                bg_run += 1
+                if bg_run >= RUN_REQUIRED:
+                    left_s = x + bg_run  # last content column + 1
+                    break
+            else:
+                bg_run = 0
+
+        # RIGHT edge: same walking right from center.
         right_s = sw
-        for x in range(sw - 1, -1, -1):
-            if col_variance(x) > VAR_THRESHOLD:
-                right_s = min(sw, x + 3)
-                break
+        bg_run = 0
+        for x in range(center_x, sw):
+            if col_range[x] <= BG_RANGE:
+                bg_run += 1
+                if bg_run >= RUN_REQUIRED:
+                    right_s = x - bg_run + 1  # first bg column
+                    break
+            else:
+                bg_run = 0
 
-        # Guard: content width must be at least 20% of the frame; otherwise
-        # the scan found nothing (e.g. a nearly-blank screenshot).
+        # Safety: content width must be >= 20% of frame; else fall back.
         if right_s - left_s < sw * 0.20:
             left_s = int(sw * 0.03)
             right_s = int(sw * 0.97)
 
-        # 3. TOP: scan rows top-to-bottom within the content columns, find
-        # the first row that has non-trivial variance. The top site navbar
-        # has text + logo (variance), then a thin empty strip, then the
-        # listing starts. We want to skip the navbar itself when possible,
-        # so we look for the SECOND stretch of content rather than the first.
-        # In practice OLX has a dark navbar (~40-60px); keep it so the
-        # breadcrumbs stay visible.
+        # TOP: within content columns, find first row with real content.
+        # Use row_range already pre-computed over 20-80% width — but now
+        # we want to skip navbar if any. For OLX the navbar is dark;
+        # for DIM.RIA there's no explicit navbar, just the logo in
+        # the top-left. Keep it simple: top=first row with range>BG,
+        # which naturally keeps the logo/breadcrumbs on top (which
+        # the user's template screenshots include).
         top_s = 0
         for y in range(sh):
-            if row_variance(y, left_s, right_s) > VAR_THRESHOLD:
+            if row_range[y] > BG_RANGE:
                 top_s = max(0, y - 2)
                 break
 
-        # 4. BOTTOM: scan bottom-up. Find the last busy row, then back off
-        # a bit — the lower part of OLX pages contains ad blocks and
-        # "recommended" cards which ARE busy; but DIM.RIA Playwright pads
-        # the viewport with blank orange below the footer which is NOT busy.
-        # Simple rule: cut at the last busy row + small margin.
+        # BOTTOM: walk up from the bottom to find last content row.
         bottom_s = sh
         for y in range(sh - 1, -1, -1):
-            if row_variance(y, left_s, right_s) > VAR_THRESHOLD:
+            if row_range[y] > BG_RANGE:
                 bottom_s = min(sh, y + 3)
                 break
 
-        # Guard: content height must be at least 30% of the frame.
-        if bottom_s - top_s < sh * 0.30:
+        # Cookie banner detector: both sites put a horizontal bar at
+        # the very bottom that IS content (dark background, white
+        # text — row_range high) but is below the real listing. Look
+        # for a 3-15% tall band of near-constant background colour
+        # IMMEDIATELY above the current bottom; if found, that band
+        # separates the listing from the banner, so cut at the top of
+        # the band.
+        band_top = bottom_s
+        band_rows = 0
+        for y in range(bottom_s - 1, max(0, bottom_s - int(sh * 0.25)), -1):
+            if row_range[y] <= BG_RANGE:
+                band_rows += 1
+                band_top = y
+            else:
+                if band_rows >= 2:  # found separator band
+                    bottom_s = band_top
+                    break
+                band_rows = 0
+
+        # Safety: content height must be >= 25% of frame.
+        if bottom_s - top_s < sh * 0.25:
             top_s = int(sh * 0.03)
             bottom_s = int(sh * 0.97)
 
-        # Scale coordinates back up to original resolution.
+        # Scale back to original resolution.
         left = max(0, left_s * scale)
         top = max(0, top_s * scale)
         right = min(w, right_s * scale)
         bottom = min(h, bottom_s * scale)
 
-        # Portrait aspect cap — only applied when the capture is clearly
-        # a full-page scroll (very tall, very low aspect). When ZenRows'
-        # screenshot_selector was used server-side the frame already IS
-        # the listing card at its natural aspect (~0.7-1.0); capping it
-        # further would cut off the bottom of the card. Skip the cap
-        # when aspect is already reasonable.
+        # Portrait aspect cap: only if the result is extremely tall
+        # (fullpage scroll including ad grid). Normal listing card
+        # aspect is 0.7-1.3 and we leave those alone.
         kept_w = right - left
         kept_h = bottom - top
-        current_aspect = kept_w / max(1, kept_h)
-        # Apply the cap only when the image is TALLER than 1.5x width
-        # (aspect < 0.67) — that is a sign of a fullpage scroll with
-        # the ad block attached below the real listing.
-        if current_aspect < 0.67:
-            max_h_for_portrait = int(kept_w * 1.33)
-            if (bottom - top) > max_h_for_portrait:
-                bottom = top + max_h_for_portrait
+        aspect = kept_w / max(1, kept_h)
+        if aspect < 0.5:
+            max_h = int(kept_w * 2.0)
+            if kept_h > max_h:
+                bottom = top + max_h
 
         return (int(left), int(top), int(right), int(bottom))
 
