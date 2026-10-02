@@ -381,67 +381,59 @@ async def _take_screenshot(url, save_path):
     try:
         _zoom = float(os.environ.get("OLX_SCREENSHOT_ZOOM", "0.5") or 0.5)
     except ValueError:
-        _zoom = 0.5
+        _zoom = 1.0
     _zoom = min(1.0, max(0.3, _zoom))
-    hide_css = (
-        "var css="
-        "'body { zoom: " + str(_zoom) + " !important; } "
-        "[data-testid=\"cookies-bar\"],[data-cy=\"cookies-bar\"],"
-        "[data-testid=\"cookies-overlay__container\"],[data-testid*=\"cookies\"],"
+    # Full-page capture at full resolution (no shrink), then the server crops.
+    # Architecture (per user): ZenRows takes ONE full-page screenshot of the
+    # whole listing at natural desktop resolution; before the shot it dismisses
+    # the cookie bar, hides the ad/recommendation blocks, and — critically for
+    # full-page — neutralises every position:fixed / :sticky element. Fixed
+    # elements (the top nav, the cookie overlay, the sticky right-column) are
+    # otherwise re-painted onto EVERY stitched segment of a full-page capture,
+    # which is exactly the repeating "полоса" seen before. Setting them to
+    # position:static makes each appear once, in normal flow. smart_crop_listing
+    # then trims rails + the empty top band and caps the aspect to the template.
+    # zoom defaults to 1.0 now (full text resolution); OLX_SCREENSHOT_ZOOM still
+    # overrides it. Selectors (cookies/baxter/recommendations) confirmed by live
+    # DOM inspection across 7 listings; cookie dismiss btn = dismiss-cookies-banner.
+    prep_js = (
+        "try{var b=document.querySelector('[data-testid=\"dismiss-cookies-banner\"]');if(b)b.click();}catch(e){}"
+        "try{var pats=['прийня','погодж','приймаю','дозволит','зрозум'];"
+        "var cands=[].slice.call(document.querySelectorAll('button,[role=\"button\"],a'));"
+        "for(var i=0;i<cands.length;i++){var t=(cands[i].textContent||'').trim().toLowerCase();"
+        "if(t.length<40&&pats.some(function(p){return t.indexOf(p)>-1;})){cands[i].click();break;}}}catch(e){}"
+        "var css='body{zoom:" + str(_zoom) + " !important;}"
+        "[data-testid=\"cookies-bar\"],[data-cy=\"cookies-bar\"],[data-testid=\"cookies-overlay__container\"],[data-testid*=\"cookies\"],"
         "#onetrust-banner-sdk,.cookie-banner,[class*=\"cookie\"],"
         "[id^=\"baxter-\"],[data-testid=\"qa-advert-slot\"],[data-testid=\"ad-slot\"],"
-        "[data-testid=\"ad-recommendations\"],[data-testid=\"adlist-slider\"],"
-        "[class*=\"skeleton\"]"
+        "[data-testid=\"ad-recommendations\"],[data-testid=\"adlist-slider\"],[class*=\"skeleton\"]"
         "{display:none !important;visibility:hidden !important;height:0 !important;}';"
-        "var s=document.createElement('style');"
-        "s.innerHTML=css;document.head.appendChild(s);"
+        "var s=document.createElement('style');s.innerHTML=css;document.head.appendChild(s);"
+        "try{var all=document.querySelectorAll('body *');for(var j=0;j<all.length;j++){"
+        "var p=getComputedStyle(all[j]).position;if(p==='fixed'||p==='sticky'){"
+        "all[j].style.setProperty('position','static','important');}}}catch(e){}"
     )
-    # screenshot_fullpage captures the whole scrolled page; smart_crop_listing
-    # then trims empty rails + navbar + ad block. Verified on test rig:
-    # ZenRows 1920x911 fullpage → smart_crop → 744x864 (aspect 0.86,
-    # matches user template exactly).
-    #
-    # Optional override: OLX_SCREENSHOT_SELECTOR env for element-only
-    # capture via ZenRows screenshot_selector. If set, fullpage is OFF
-    # (ZenRows API returns HTTP 400 REQS004 when both are set).
+    # Optional override: OLX_SCREENSHOT_SELECTOR env for element-only capture via
+    # ZenRows screenshot_selector (mutually exclusive with fullpage — REQS004).
     selector = (os.environ.get("OLX_SCREENSHOT_SELECTOR", "") or "").strip()
-    # Params MUST match scripts/test_screenshot_live.py exactly — that rig
-    # produces the perfect portrait ~770x909 crop. The previous prod params
-    # diverged in three ways that each broke the capture:
-    #   1. hide_css (zoom:0.5 + cookie hiding) was BUILT but never sent — no
-    #      js_instructions key existed, so the page was snapped at full desktop
-    #      zoom with the cookie banner visible → wide landscape frame.
-    #   2. no window_width/window_height → ZenRows used its default wide
-    #      desktop viewport instead of the 900x1600 portrait window.
-    #   3. screenshot_fullpage=true scrolled the WHOLE page (nav + ads +
-    #      recommended listings) into one giant frame; the test rig uses a
-    #      plain viewport screenshot of the zoomed portrait window instead.
-    # device=desktop + window 900x1600 + zoom:0.5 (via js_instructions) is
-    # what makes the OLX card (gallery+title+price+specs) fit one portrait
-    # frame. smart_crop_listing in report_generator then trims the rails.
     params = {
         "apikey": settings.zenrows_api_key,
         "url": url,
-        "screenshot": "true",
+        "screenshot_fullpage": "true",
         "screenshot_format": "jpeg",
         "screenshot_quality": 92,
-        "wait": 800,
-        "window_width": 900,
-        "window_height": 1600,
+        "wait": 1000,
         "js_render": "true",
-        "device": "desktop",
         "js_instructions": json.dumps([
-            {"wait": 1200}, {"evaluate": hide_css}, {"wait": 1800}
+            {"wait": 1500}, {"evaluate": prep_js}, {"wait": 1800}
         ]),
     }
     if selector:
-        # Element-only server-side crop override (env). Mutually exclusive
-        # with the viewport screenshot params above per ZenRows (REQS004),
-        # so a selector drops window sizing/fullpage; js_instructions stay.
+        # Element-only server-side crop override. fullpage and selector cannot
+        # both be set (ZenRows 400 REQS004), so drop fullpage when a selector
+        # is given; the prep js_instructions still run.
         params["screenshot_selector"] = selector
-        params.pop("screenshot", None)
-        params.pop("window_width", None)
-        params.pop("window_height", None)
+        params.pop("screenshot_fullpage", None)
         print(f"OLX screenshot: using selector '{selector}'")
     try:
         async with httpx.AsyncClient(timeout=60) as client:
