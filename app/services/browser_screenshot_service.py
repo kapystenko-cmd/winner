@@ -173,6 +173,33 @@ def smart_crop_listing(image_path, source: str = "") -> tuple:
                     break
                 band_rows = 0
 
+        # Trim an unfilled ad band at the very top. OLX sometimes renders a
+        # tall empty "Реклама" ad slot (that did not fill) between the nav/
+        # breadcrumbs and the listing card. That dead space, kept together with
+        # the aspect cap below, pushes the опис out of frame. Find the longest
+        # run of background rows in the top 40%: a real empty band (> 4% of
+        # height) whose end is still in the top 25% means we start the crop just
+        # below it (dropping nav + band). The top-25% guard ensures we only
+        # skip a band ABOVE the photo, never jump past the photo into mid-card.
+        # A clean capture has only small inter-section gaps, so the nav bar is
+        # left in place exactly like the user's template screenshot. (A FILLED
+        # ad banner is real pixels, not a background run, so it is not caught
+        # here — that is handled by hiding ad slots at capture time.)
+        scan_end = min(sh, top_s + int(sh * 0.40))
+        best_len = 0
+        best_end = top_s
+        run = 0
+        for y in range(top_s, scan_end):
+            if row_range[y] <= BG_RANGE:
+                run += 1
+                if run > best_len:
+                    best_len = run
+                    best_end = y + 1
+            else:
+                run = 0
+        if best_len > sh * 0.04 and best_end < sh * 0.25:
+            top_s = max(top_s, best_end - 2)
+
         # Safety: content height must be >= 25% of frame.
         if bottom_s - top_s < sh * 0.25:
             top_s = int(sh * 0.03)
