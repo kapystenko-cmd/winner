@@ -427,8 +427,16 @@ async def _take_screenshot(url, save_path):
         "window_height": 1600,
         "js_render": "true",
         "device": "desktop",
+        # wait_for the description block BEFORE hiding/capturing: a slow listing
+        # could otherwise be snapped with only the header+photo rendered and the
+        # опис/specs still missing, which smart_crop then trimmed into a short
+        # landscape frame (the "косой" analog image2 in report_68). Waiting for
+        # [data-cy="ad_description"] guarantees the full card is present first.
         "js_instructions": json.dumps([
-            {"wait": 1200}, {"evaluate": prep_js}, {"wait": 1800}
+            {"wait": 1200},
+            {"wait_for": "[data-cy=\"ad_description\"]"},
+            {"evaluate": prep_js},
+            {"wait": 1500},
         ]),
     }
     if selector:
