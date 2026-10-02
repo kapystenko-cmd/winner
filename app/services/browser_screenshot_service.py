@@ -184,14 +184,29 @@ def smart_crop_listing(image_path, source: str = "") -> tuple:
         right = min(w, right_s * scale)
         bottom = min(h, bottom_s * scale)
 
-        # Portrait aspect cap: only if the result is extremely tall
-        # (fullpage scroll including ad grid). Normal listing card
-        # aspect is 0.7-1.3 and we leave those alone.
+        # Aspect cap toward the user's template (~0.87 = full card). ZenRows
+        # ignores window sizing for its anti-bot bypass and its zoom:0.5 only
+        # lands sometimes, so the raw frame size is inconsistent (seen on one
+        # real run: 1920x911, 1920x953, 2560x1305, 3504x2086, 3840x1926). The
+        # real card (photo+title+price+specs+опис+map) always sits at the TOP;
+        # BELOW it the capture often includes a lazy-loaded "Схожі оголошення"
+        # grid of grey skeleton boxes plus footer/ad slots. The pixel scan
+        # above keeps that junk (grey skeletons read as content), so the kept
+        # region comes out tall and narrow (observed 0.50-0.65) and squishes
+        # unreadably at Word page width — while a capture that happened to omit
+        # the grid came out at the ideal ~0.86. Once the kept region is taller
+        # than the template, cut the excess from the BOTTOM (keep the card at
+        # top, drop the grid) to bring it back to the template shape. This also
+        # keeps most crops under the 1280x1800 annex cap, so they are no longer
+        # downscaled — fixing the "weak quality" on the tall ones too.
+        # 0.82 (slightly taller than 0.87) leaves genuine template-shaped
+        # captures like the 744x864 one untouched while trimming the offenders.
         kept_w = right - left
         kept_h = bottom - top
         aspect = kept_w / max(1, kept_h)
-        if aspect < 0.5:
-            max_h = int(kept_w * 2.0)
+        MIN_ASPECT = 0.82  # width/height floor = template card shape
+        if aspect < MIN_ASPECT:
+            max_h = int(kept_w / MIN_ASPECT)
             if kept_h > max_h:
                 bottom = top + max_h
 
