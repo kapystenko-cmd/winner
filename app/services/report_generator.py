@@ -640,6 +640,7 @@ def _prepare_image_for_annex(
     enable_text_orientation: bool = True,
     max_size: tuple = (1280, 1800),
     jpeg_quality: int = 78,
+    sharpen_percent: int = 0,
 ):
     """Make a display-only upright copy of a scan without changing upload."""
     try:
@@ -704,6 +705,18 @@ def _prepare_image_for_annex(
             # captured frame is ~900x1600, thumbnail() only ever downscales,
             # so a larger max_size would do nothing.
             image.thumbnail(max_size)
+            # Optional edge sharpening, applied AFTER the downscale above so it
+            # acts on the final pixels. Analog screenshots are web captures of
+            # small text (specs, опис, price) that lose crispness on resize; a
+            # mild unsharp mask restores readability. Scoped to screenshots via
+            # sharpen_percent (document scans pass 0 and are untouched). Strength
+            # is tunable live on the server via ANALOG_SHARPEN_PERCENT, no code
+            # change needed: ~80 is light, 100 balanced, 120+ strong.
+            if sharpen_percent and sharpen_percent > 0:
+                from PIL import ImageFilter
+                image = image.filter(
+                    ImageFilter.UnsharpMask(radius=2, percent=int(sharpen_percent), threshold=3)
+                )
             prepared = Path(source).with_name(f"_annex_upright_{len(temporary) + 1}.jpg")
             image.convert("RGB").save(prepared, format="JPEG", quality=jpeg_quality, optimize=True, progressive=True)
             temporary.append(prepared)
@@ -1568,6 +1581,7 @@ async def generate_full_word_package(report, user, analogs, include_screenshots=
                 display_image = _prepare_image_for_annex(
                     cropped_primary, None, temporary, enable_text_orientation=False,
                     jpeg_quality=92,
+                    sharpen_percent=int(os.environ.get("ANALOG_SHARPEN_PERCENT", "100") or 0),
                 )
                 # The composed evidence frame is a fixed 900x1600 portrait
                 # image. 15.5 cm scaled to ~27.5 cm tall left no room for the
