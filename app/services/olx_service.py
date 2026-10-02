@@ -381,21 +381,21 @@ async def _take_screenshot(url, save_path):
     try:
         _zoom = float(os.environ.get("OLX_SCREENSHOT_ZOOM", "0.5") or 0.5)
     except ValueError:
-        _zoom = 1.0
+        _zoom = 0.5
     _zoom = min(1.0, max(0.3, _zoom))
-    # Full-page capture at full resolution (no shrink), then the server crops.
-    # Architecture (per user): ZenRows takes ONE full-page screenshot of the
-    # whole listing at natural desktop resolution; before the shot it dismisses
-    # the cookie bar, hides the ad/recommendation blocks, and — critically for
-    # full-page — neutralises every position:fixed / :sticky element. Fixed
-    # elements (the top nav, the cookie overlay, the sticky right-column) are
-    # otherwise re-painted onto EVERY stitched segment of a full-page capture,
-    # which is exactly the repeating "полоса" seen before. Setting them to
-    # position:static makes each appear once, in normal flow. smart_crop_listing
-    # then trims rails + the empty top band and caps the aspect to the template.
-    # zoom defaults to 1.0 now (full text resolution); OLX_SCREENSHOT_ZOOM still
-    # overrides it. Selectors (cookies/baxter/recommendations) confirmed by live
-    # DOM inspection across 7 listings; cookie dismiss btn = dismiss-cookies-banner.
+    # Capture = ZenRows VIEWPORT screenshot (screenshot=true), NOT fullpage.
+    # Hard lesson from reports 63 & 67: screenshot_fullpage returns NO image at
+    # all for OLX here (report_63, the original fullpage code, had zero analog
+    # screenshots; report_67, the fullpage rewrite, same) — ZenRows only yields
+    # an image for OLX on the viewport path. The viewport path is what produced
+    # the working captures in reports 64/65/66. So: viewport + window + device,
+    # with zoom (default 0.5) shrinking the card to fit one above-the-fold
+    # frame. Before the shot, prep_js dismisses the cookie bar and hides the
+    # ad/recommendation blocks (the filled top banner the pixel crop can't tell
+    # from content); smart_crop_listing then trims rails, the empty top band,
+    # and caps the aspect — its anti-collapse guard fixes the 148px sliver.
+    # OLX_SCREENSHOT_ZOOM still overrides zoom for sharpness experiments, but in
+    # the viewport path raising it too far can push the опис below the fold.
     prep_js = (
         "try{var b=document.querySelector('[data-testid=\"dismiss-cookies-banner\"]');if(b)b.click();}catch(e){}"
         "try{var pats=['прийня','погодж','приймаю','дозволит','зрозум'];"
@@ -419,21 +419,26 @@ async def _take_screenshot(url, save_path):
     params = {
         "apikey": settings.zenrows_api_key,
         "url": url,
-        "screenshot_fullpage": "true",
+        "screenshot": "true",
         "screenshot_format": "jpeg",
         "screenshot_quality": 92,
-        "wait": 1000,
+        "wait": 800,
+        "window_width": 900,
+        "window_height": 1600,
         "js_render": "true",
+        "device": "desktop",
         "js_instructions": json.dumps([
-            {"wait": 1500}, {"evaluate": prep_js}, {"wait": 1800}
+            {"wait": 1200}, {"evaluate": prep_js}, {"wait": 1800}
         ]),
     }
     if selector:
-        # Element-only server-side crop override. fullpage and selector cannot
-        # both be set (ZenRows 400 REQS004), so drop fullpage when a selector
-        # is given; the prep js_instructions still run.
+        # Element-only server-side crop override. screenshot and selector cannot
+        # both be set (ZenRows 400 REQS004), so drop the viewport screenshot +
+        # window sizing when a selector is given; the prep js_instructions stay.
         params["screenshot_selector"] = selector
-        params.pop("screenshot_fullpage", None)
+        params.pop("screenshot", None)
+        params.pop("window_width", None)
+        params.pop("window_height", None)
         print(f"OLX screenshot: using selector '{selector}'")
     try:
         async with httpx.AsyncClient(timeout=60) as client:
