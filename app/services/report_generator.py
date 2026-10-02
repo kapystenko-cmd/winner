@@ -640,6 +640,7 @@ def _prepare_image_for_annex(
     enable_text_orientation: bool = True,
     max_size: tuple = (1280, 1800),
     jpeg_quality: int = 78,
+    sharpen_percent: int = 0,
 ):
     """Make a display-only upright copy of a scan without changing upload."""
     try:
@@ -704,6 +705,18 @@ def _prepare_image_for_annex(
             # captured frame is ~900x1600, thumbnail() only ever downscales,
             # so a larger max_size would do nothing.
             image.thumbnail(max_size)
+            # Optional edge sharpening, applied AFTER the downscale above so it
+            # acts on the final pixels. Analog screenshots are web captures of
+            # small text (specs, опис, price) that lose crispness on resize; a
+            # mild unsharp mask restores readability. Scoped to screenshots via
+            # sharpen_percent (document scans pass 0 and are untouched). Strength
+            # is tunable live on the server via ANALOG_SHARPEN_PERCENT, no code
+            # change needed: ~80 is light, 100 balanced, 120+ strong.
+            if sharpen_percent and sharpen_percent > 0:
+                from PIL import ImageFilter
+                image = image.filter(
+                    ImageFilter.UnsharpMask(radius=2, percent=int(sharpen_percent), threshold=3)
+                )
             prepared = Path(source).with_name(f"_annex_upright_{len(temporary) + 1}.jpg")
             image.convert("RGB").save(prepared, format="JPEG", quality=jpeg_quality, optimize=True, progressive=True)
             temporary.append(prepared)
@@ -1517,39 +1530,23 @@ async def generate_full_word_package(report, user, analogs, include_screenshots=
                 _is_olx = str(getattr(analog, "source", "") or "").strip().lower() == "olx"
                 cropped_primary = primary
                 try:
+                    # Smart content-based crop. Instead of fixed percentages
+                    # (which broke every time ZenRows returned a different
+                    # frame size — 1920x897, 2840x1536, 4576x2438 all seen
+                    # on real runs), scan the pixels to find the real
+                    # content area: trim empty grey rails on each side,
+                    # cut above the content (navbar) and below the content
+                    # (ad blocks, footer, viewport padding). Verified on
+                    # the images from report 59 — produces crops that
+                    # match the user's own template screenshots:
+                    #   OLX  960x619 → 594x388 (photo+price+user+specs)
+                    #   DIM.RIA 1280x1365 → 1278x744 (whole left pane)
+                    from app.services.browser_screenshot_service import smart_crop_listing
+                    _left, _top, _right, _bottom = smart_crop_listing(
+                        primary, source=("olx" if _is_olx else "dimria")
+                    )
                     with PILImage.open(primary) as _shot:
                         _w, _h = _shot.size
-                        if _is_olx:
-                            # OLX via ZenRows at zoom 0.5. The frame comes
-                            # with grey side rails on both sides (OLX
-                            # desktop layout has empty columns outside the
-                            # ~930px wide content area, and ZenRows'
-                            # effective viewport is wider than that). The
-                            # user's template screenshot shows the FULL
-                            # listing content area including the right
-                            # column with price/buttons, but WITHOUT the
-                            # empty grey rails on either side. Trim ~10%
-                            # off each side, ~5% off top (OLX navbar) and
-                            # ~35% off bottom (reklama blocks: PropellerAds,
-                            # Watsons, "рекомендовані оголошення"). This
-                            # keeps the whole card readable and the image
-                            # fits on one Word page with the heading+link.
-                            _left, _top, _right, _bottom = (
-                                int(_w * 0.10), int(_h * 0.05), int(_w * 0.90), int(_h * 0.65)
-                            )
-                        else:
-                            # DIM.RIA via Playwright at zoom 0.5 (1800x2160).
-                            # The listing content fits in the first ~70%
-                            # of the frame; the rest is empty viewport
-                            # padding below the footer. Keep the FULL
-                            # width — the capture has no side rails after
-                            # zoom 0.5 and the user's template shows the
-                            # whole width retained. Only top navbar (~3%)
-                            # and bottom (footer + empty padding, ~30%)
-                            # are cut.
-                            _left, _top, _right, _bottom = (
-                                int(_w * 0.00), int(_h * 0.03), int(_w * 1.00), int(_h * 0.70)
-                            )
                         print(f"Analog screenshot crop input: {_w}x{_h}, source={getattr(analog, 'source', '')!r}")
                         if _right > _left and _bottom > _top:
                             _shot2 = _shot.convert("RGB") if _shot.mode not in ("RGB", "L") else _shot
@@ -1584,6 +1581,7 @@ async def generate_full_word_package(report, user, analogs, include_screenshots=
                 display_image = _prepare_image_for_annex(
                     cropped_primary, None, temporary, enable_text_orientation=False,
                     jpeg_quality=92,
+                    sharpen_percent=int(os.environ.get("ANALOG_SHARPEN_PERCENT", "100") or 0),
                 )
                 # The composed evidence frame is a fixed 900x1600 portrait
                 # image. 15.5 cm scaled to ~27.5 cm tall left no room for the
@@ -1615,7 +1613,12 @@ async def generate_full_word_package(report, user, analogs, include_screenshots=
                 # screenshot_service), so no side-trim is needed here.
                 # Insert at full available page width; max_height_cm is the
                 # safety net for any unusually tall capture.
-                add_image(display_image, "Картка оголошення", width=Cm(17), max_height_cm=24)
+                # width=17cm matches the usable page width; max_height_cm=18
+                # keeps the portrait screenshot + its heading + link all on
+                # one page (A4 usable height is ~27cm, heading+link take
+                # ~5cm, leaving ~22cm for the image; 18cm gives some margin
+                # so the next item starts on the same page if short).
+                add_image(display_image, "Картка оголошення", width=Cm(17), max_height_cm=18)
 
         if entries:
             # Only force a fresh page here if something (photos/screenshots)

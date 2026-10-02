@@ -358,28 +358,64 @@ async def _take_screenshot(url, save_path):
     # listing (gallery + title + price + first specs) fit into one frame
     # instead of a shallow desktop strip. hide_css also removes cookie
     # banners that would otherwise cover the price block.
-    hide_css = (
-        "var css="
-        "'body { zoom: 0.5 !important; } "
-        "[data-testid=\"cookies-bar\"],[data-cy=\"cookies-bar\"],"
-        "#onetrust-banner-sdk,.cookie-banner,[class*=\"cookie\"]"
+    # Ad + recommendation selectors confirmed by live DOM inspection across 7
+    # different OLX listings (house/townhouse/duplex/part-house/2-storey): all
+    # ad slots carry id^="baxter-" AND data-testid="qa-advert-slot" (the top
+    # banner that pushed the опис out of frame is baxter-top; others:
+    # under-price, parameters, middle, right-column); the grey "Схожі
+    # оголошення" skeleton grid below the card is data-testid="ad-recommendations"
+    # and the author's-listings sliders are data-testid="adlist-slider". Hiding
+    # these at capture time removes the FILLED ad banners that the pixel crop
+    # cannot distinguish from real content, so the capture is the clean card
+    # (photo+title+price+specs+опис+seller+map) every time. These testids are
+    # stable (not the churning css-* classes), so this is robust to redesigns.
+    # Capture zoom is tunable live via OLX_SCREENSHOT_ZOOM. zoom:0.5 shrinks the
+    # whole page to 50%, which is what lets the two-column card fit a portrait
+    # frame — but it also HALVES the pixel density of the listing text, which is
+    # the main cause of soft/unreadable опис text in the report. Since we now
+    # capture fullpage and crop to the card anyway (fit no longer depends on
+    # zoom), a larger value keeps more text resolution: 0.5 = smallest/safest,
+    # 0.67 ~ +33% text pixels, 1.0 = full desktop resolution (sharpest, tallest
+    # frame). Default stays 0.5 so nothing changes until tested; raise it on the
+    # server and compare sharpness without a code change.
+    try:
+        _zoom = float(os.environ.get("OLX_SCREENSHOT_ZOOM", "0.5") or 0.5)
+    except ValueError:
+        _zoom = 0.5
+    _zoom = min(1.0, max(0.3, _zoom))
+    # Capture = ZenRows VIEWPORT screenshot (screenshot=true), NOT fullpage.
+    # Hard lesson from reports 63 & 67: screenshot_fullpage returns NO image at
+    # all for OLX here (report_63, the original fullpage code, had zero analog
+    # screenshots; report_67, the fullpage rewrite, same) — ZenRows only yields
+    # an image for OLX on the viewport path. The viewport path is what produced
+    # the working captures in reports 64/65/66. So: viewport + window + device,
+    # with zoom (default 0.5) shrinking the card to fit one above-the-fold
+    # frame. Before the shot, prep_js dismisses the cookie bar and hides the
+    # ad/recommendation blocks (the filled top banner the pixel crop can't tell
+    # from content); smart_crop_listing then trims rails, the empty top band,
+    # and caps the aspect — its anti-collapse guard fixes the 148px sliver.
+    # OLX_SCREENSHOT_ZOOM still overrides zoom for sharpness experiments, but in
+    # the viewport path raising it too far can push the опис below the fold.
+    prep_js = (
+        "try{var b=document.querySelector('[data-testid=\"dismiss-cookies-banner\"]');if(b)b.click();}catch(e){}"
+        "try{var pats=['прийня','погодж','приймаю','дозволит','зрозум'];"
+        "var cands=[].slice.call(document.querySelectorAll('button,[role=\"button\"],a'));"
+        "for(var i=0;i<cands.length;i++){var t=(cands[i].textContent||'').trim().toLowerCase();"
+        "if(t.length<40&&pats.some(function(p){return t.indexOf(p)>-1;})){cands[i].click();break;}}}catch(e){}"
+        "var css='body{zoom:" + str(_zoom) + " !important;}"
+        "[data-testid=\"cookies-bar\"],[data-cy=\"cookies-bar\"],[data-testid=\"cookies-overlay__container\"],[data-testid*=\"cookies\"],"
+        "#onetrust-banner-sdk,.cookie-banner,[class*=\"cookie\"],"
+        "[id^=\"baxter-\"],[data-testid=\"qa-advert-slot\"],[data-testid=\"ad-slot\"],"
+        "[data-testid=\"ad-recommendations\"],[data-testid=\"adlist-slider\"],[class*=\"skeleton\"]"
         "{display:none !important;visibility:hidden !important;height:0 !important;}';"
-        "var s=document.createElement('style');"
-        "s.innerHTML=css;document.head.appendChild(s);"
+        "var s=document.createElement('style');s.innerHTML=css;document.head.appendChild(s);"
+        "try{var all=document.querySelectorAll('body *');for(var j=0;j<all.length;j++){"
+        "var p=getComputedStyle(all[j]).position;if(p==='fixed'||p==='sticky'){"
+        "all[j].style.setProperty('position','static','important');}}}catch(e){}"
     )
-    # Viewport reverted to 900x1600 for OLX. Report 60 proved that at
-    # window_width=1800 ZenRows ignored our window_width AND our zoom:0.5
-    # CSS injection, returning a landscape 1920x897 frame of its own
-    # choosing (likely a hardcoded profile ZenRows uses when it has to
-    # bypass OLX's anti-bot). With window_width=900 ZenRows respects the
-    # setting and zoom:0.5 does fit the gallery+price+specs into a
-    # portrait frame — this is the configuration that produced the good
-    # screenshots in older working builds.
-    #
-    # Wait order: top-level wait small, then js_instructions wait before
-    # evaluate (let OLX hydrate), evaluate (apply zoom + hide cookies),
-    # wait again (let the browser reflow at the new scale before the
-    # snapshot is taken).
+    # Optional override: OLX_SCREENSHOT_SELECTOR env for element-only capture via
+    # ZenRows screenshot_selector (mutually exclusive with fullpage — REQS004).
+    selector = (os.environ.get("OLX_SCREENSHOT_SELECTOR", "") or "").strip()
     params = {
         "apikey": settings.zenrows_api_key,
         "url": url,
@@ -391,12 +427,27 @@ async def _take_screenshot(url, save_path):
         "window_height": 1600,
         "js_render": "true",
         "device": "desktop",
+        # wait_for the description block BEFORE hiding/capturing: a slow listing
+        # could otherwise be snapped with only the header+photo rendered and the
+        # опис/specs still missing, which smart_crop then trimmed into a short
+        # landscape frame (the "косой" analog image2 in report_68). Waiting for
+        # [data-cy="ad_description"] guarantees the full card is present first.
         "js_instructions": json.dumps([
             {"wait": 1200},
-            {"evaluate": hide_css},
-            {"wait": 1800},
+            {"wait_for": "[data-cy=\"ad_description\"]"},
+            {"evaluate": prep_js},
+            {"wait": 1500},
         ]),
     }
+    if selector:
+        # Element-only server-side crop override. screenshot and selector cannot
+        # both be set (ZenRows 400 REQS004), so drop the viewport screenshot +
+        # window sizing when a selector is given; the prep js_instructions stay.
+        params["screenshot_selector"] = selector
+        params.pop("screenshot", None)
+        params.pop("window_width", None)
+        params.pop("window_height", None)
+        print(f"OLX screenshot: using selector '{selector}'")
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             response = await client.get("https://api.zenrows.com/v1/", params=params)

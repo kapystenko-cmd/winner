@@ -16,6 +16,264 @@ from app.core.config import settings
 _screenshot_slots = asyncio.Semaphore(max(1, settings.browser_screenshot_concurrency))
 
 
+def smart_crop_listing(image_path, source: str = "") -> tuple:
+    """Return (left, top, right, bottom) crop of the real listing content.
+
+    Finds where the listing card actually sits in the frame, independent
+    of what dimensions ZenRows or Playwright decided to return (seen
+    on real runs: OLX 1920x968, 2560x1321, 2877x1449; DIM.RIA
+    3024x1547). ZenRows ignores window_width/screenshot_selector for
+    its anti-bot bypass, so Python-side cropping is the only place
+    this can happen reliably.
+
+    Strategy:
+
+    1. Build a per-column "content" signal: a column is CONTENT if its
+       pixels span a visible range of brightness (max-min > 15 across
+       its height, after excluding the top navbar). A column of plain
+       background has max-min ~2-5 (jpeg noise only).
+
+    2. Starting from the horizontal CENTER, walk outward both ways to
+       find the first run of 20+ consecutive BACKGROUND columns — that
+       marks the edge of the listing content.
+
+    3. Same for rows: skip the dark site navbar at the very top, then
+       walk inward to find top of listing. Walk up from the bottom to
+       find where listing content ends (before cookie banner / footer /
+       ad grid).
+
+    4. OLX & DIM.RIA both have a horizontal cookie banner at the very
+       bottom; detect it as a tall horizontal strip of near-uniform
+       colour and cut above it.
+
+    Returns (left, top, right, bottom) in pixel coordinates of the
+    ORIGINAL image.
+    """
+    try:
+        from PIL import Image
+        import statistics
+    except ImportError:
+        from PIL import Image
+        with Image.open(image_path) as im:
+            return (0, 0, im.size[0], im.size[1])
+
+    with Image.open(image_path) as im:
+        img = im.convert("RGB")
+        w, h = img.size
+
+        # Downsample for speed; map back at the end.
+        scale = max(1, w // 500)
+        small = img.resize((w // scale, h // scale)) if scale > 1 else img
+        sw, sh = small.size
+        px = small.load()
+
+        def luma(x: int, y: int) -> int:
+            r, g, b = px[x, y]
+            # Rec. 601 luma
+            return (299 * r + 587 * g + 114 * b) // 1000
+
+        # Pre-compute row signatures over the center 60% of width to
+        # avoid left/right rails/panels distorting them.
+        x_lo = int(sw * 0.20)
+        x_hi = int(sw * 0.80)
+        row_range = []
+        for y in range(sh):
+            vals = [luma(x, y) for x in range(x_lo, x_hi)]
+            row_range.append(max(vals) - min(vals))
+
+        BG_RANGE = 15
+
+        # Column signatures: look ONLY at the vertical middle 60% of
+        # the image. The top ~15% contains navbar/breadcrumbs which run
+        # edge-to-edge (dark bar + text); the bottom ~15% contains
+        # cookie banners / footer / ads which also run edge-to-edge.
+        # Both would make every column look "busy" even in the empty
+        # side rails. Using only y=15%-85% means empty side columns
+        # (plain background in the listing area) really look uniform.
+        y_start = int(sh * 0.15)
+        y_end = int(sh * 0.85)
+        col_range = []
+        for x in range(sw):
+            vals = [luma(x, y) for y in range(y_start, y_end)]
+            col_range.append(max(vals) - min(vals))
+
+        # Threshold: columns/rows with range <= BG_RANGE are considered
+        # background. 15 catches plain solid colours even with jpeg
+        # noise; real content with text or an image easily exceeds 50.
+        RUN_REQUIRED = max(3, sw // 60)  # ~1.5% of width
+
+        # LEFT edge: walk from the center LEFT. The first column where
+        # the following RUN_REQUIRED columns are ALL background marks
+        # the end of content on the left side.
+        center_x = sw // 2
+        left_s = 0
+        bg_run = 0
+        for x in range(center_x, -1, -1):
+            if col_range[x] <= BG_RANGE:
+                bg_run += 1
+                if bg_run >= RUN_REQUIRED:
+                    left_s = x + bg_run  # last content column + 1
+                    break
+            else:
+                bg_run = 0
+
+        # RIGHT edge: same walking right from center.
+        right_s = sw
+        bg_run = 0
+        for x in range(center_x, sw):
+            if col_range[x] <= BG_RANGE:
+                bg_run += 1
+                if bg_run >= RUN_REQUIRED:
+                    right_s = x - bg_run + 1  # first bg column
+                    break
+            else:
+                bg_run = 0
+
+        # Anti-collapse: the center-out walk above starts at the horizontal
+        # centre, which on a 2-column OLX card (photo | price/map) can land in
+        # the white GUTTER between the columns — then both walks hit background
+        # immediately and collapse to a sliver (seen on a real report: a 148px
+        # crop, unreadable once placed in Word). If the kept width is
+        # implausibly narrow for a listing card, re-detect by spanning from the
+        # first to the last run of content columns across the WHOLE frame: this
+        # keeps both columns and the gutter while still dropping the empty side
+        # rails. 0.55 is below a normal full-card width but well above the
+        # sliver, and single-column DIM.RIA cards that center-out already
+        # handles stay above it, so they are left untouched.
+        if right_s - left_s < sw * 0.55:
+            run = 0
+            first_c = None
+            for x in range(sw):
+                if col_range[x] > BG_RANGE:
+                    run += 1
+                    if run >= RUN_REQUIRED and first_c is None:
+                        first_c = x - run + 1
+                else:
+                    run = 0
+            run = 0
+            last_c = None
+            for x in range(sw - 1, -1, -1):
+                if col_range[x] > BG_RANGE:
+                    run += 1
+                    if run >= RUN_REQUIRED and last_c is None:
+                        last_c = x + run - 1
+                else:
+                    run = 0
+            if (first_c is not None and last_c is not None
+                    and last_c - first_c > right_s - left_s):
+                left_s, right_s = first_c, last_c + 1
+
+        # Safety: content width must be >= 20% of frame; else fall back.
+        if right_s - left_s < sw * 0.20:
+            left_s = int(sw * 0.03)
+            right_s = int(sw * 0.97)
+
+        # TOP: within content columns, find first row with real content.
+        # Use row_range already pre-computed over 20-80% width — but now
+        # we want to skip navbar if any. For OLX the navbar is dark;
+        # for DIM.RIA there's no explicit navbar, just the logo in
+        # the top-left. Keep it simple: top=first row with range>BG,
+        # which naturally keeps the logo/breadcrumbs on top (which
+        # the user's template screenshots include).
+        top_s = 0
+        for y in range(sh):
+            if row_range[y] > BG_RANGE:
+                top_s = max(0, y - 2)
+                break
+
+        # BOTTOM: walk up from the bottom to find last content row.
+        bottom_s = sh
+        for y in range(sh - 1, -1, -1):
+            if row_range[y] > BG_RANGE:
+                bottom_s = min(sh, y + 3)
+                break
+
+        # Cookie banner detector: both sites put a horizontal bar at
+        # the very bottom that IS content (dark background, white
+        # text — row_range high) but is below the real listing. Look
+        # for a 3-15% tall band of near-constant background colour
+        # IMMEDIATELY above the current bottom; if found, that band
+        # separates the listing from the banner, so cut at the top of
+        # the band.
+        band_top = bottom_s
+        band_rows = 0
+        for y in range(bottom_s - 1, max(0, bottom_s - int(sh * 0.25)), -1):
+            if row_range[y] <= BG_RANGE:
+                band_rows += 1
+                band_top = y
+            else:
+                if band_rows >= 2:  # found separator band
+                    bottom_s = band_top
+                    break
+                band_rows = 0
+
+        # Trim an unfilled ad band at the very top. OLX sometimes renders a
+        # tall empty "Реклама" ad slot (that did not fill) between the nav/
+        # breadcrumbs and the listing card. That dead space, kept together with
+        # the aspect cap below, pushes the опис out of frame. Find the longest
+        # run of background rows in the top 40%: a real empty band (> 4% of
+        # height) whose end is still in the top 25% means we start the crop just
+        # below it (dropping nav + band). The top-25% guard ensures we only
+        # skip a band ABOVE the photo, never jump past the photo into mid-card.
+        # A clean capture has only small inter-section gaps, so the nav bar is
+        # left in place exactly like the user's template screenshot. (A FILLED
+        # ad banner is real pixels, not a background run, so it is not caught
+        # here — that is handled by hiding ad slots at capture time.)
+        scan_end = min(sh, top_s + int(sh * 0.40))
+        best_len = 0
+        best_end = top_s
+        run = 0
+        for y in range(top_s, scan_end):
+            if row_range[y] <= BG_RANGE:
+                run += 1
+                if run > best_len:
+                    best_len = run
+                    best_end = y + 1
+            else:
+                run = 0
+        if best_len > sh * 0.04 and best_end < sh * 0.25:
+            top_s = max(top_s, best_end - 2)
+
+        # Safety: content height must be >= 25% of frame.
+        if bottom_s - top_s < sh * 0.25:
+            top_s = int(sh * 0.03)
+            bottom_s = int(sh * 0.97)
+
+        # Scale back to original resolution.
+        left = max(0, left_s * scale)
+        top = max(0, top_s * scale)
+        right = min(w, right_s * scale)
+        bottom = min(h, bottom_s * scale)
+
+        # Aspect cap toward the user's template (~0.87 = full card). ZenRows
+        # ignores window sizing for its anti-bot bypass and its zoom:0.5 only
+        # lands sometimes, so the raw frame size is inconsistent (seen on one
+        # real run: 1920x911, 1920x953, 2560x1305, 3504x2086, 3840x1926). The
+        # real card (photo+title+price+specs+опис+map) always sits at the TOP;
+        # BELOW it the capture often includes a lazy-loaded "Схожі оголошення"
+        # grid of grey skeleton boxes plus footer/ad slots. The pixel scan
+        # above keeps that junk (grey skeletons read as content), so the kept
+        # region comes out tall and narrow (observed 0.50-0.65) and squishes
+        # unreadably at Word page width — while a capture that happened to omit
+        # the grid came out at the ideal ~0.86. Once the kept region is taller
+        # than the template, cut the excess from the BOTTOM (keep the card at
+        # top, drop the grid) to bring it back to the template shape. This also
+        # keeps most crops under the 1280x1800 annex cap, so they are no longer
+        # downscaled — fixing the "weak quality" on the tall ones too.
+        # 0.82 (slightly taller than 0.87) leaves genuine template-shaped
+        # captures like the 744x864 one untouched while trimming the offenders.
+        kept_w = right - left
+        kept_h = bottom - top
+        aspect = kept_w / max(1, kept_h)
+        MIN_ASPECT = 0.82  # width/height floor = template card shape
+        if aspect < MIN_ASPECT:
+            max_h = int(kept_w / MIN_ASPECT)
+            if kept_h > max_h:
+                bottom = top + max_h
+
+        return (int(left), int(top), int(right), int(bottom))
+
+
 def _compose_olx_evidence(primary: Path, details: Path) -> bool:
     """Create one readable 900x1600 OLX evidence image.
 
@@ -295,11 +553,12 @@ async def _take_browser_screenshots(
                     await page.wait_for_timeout(4000)
                 except Exception:
                     pass
-                # Viewport screenshot (not full_page): 900x1600 is the target
-                # frame. full_page produced tall unpredictable portraits that
-                # A4-rendered poorly (title + link + huge image split across
-                # 2 Word pages). See test_dimria_shots_v4.py results.
-                await page.screenshot(path=str(primary), full_page=False, timeout=60000)
+                # full_page=True — captures the entire scroll of the page
+                # as one tall portrait image, matching the shape of the
+                # user's own Chrome F11 + 50% zoom template screenshot
+                # (DIM.RIA listing is ~0.86 aspect portrait). smart_crop
+                # then trims empty bottom padding and side rails.
+                await page.screenshot(path=str(primary), full_page=True, timeout=60000)
                 # Retry once for suspiciously small captures. A cold Chromium
                 # can save a ~60-80 KB blank/spinner-only frame that passes
                 # the >1024 B guard but is unusable as evidence. A single
@@ -314,7 +573,7 @@ async def _take_browser_screenshots(
                         )
                         await page.wait_for_timeout(2500)
                         await page.screenshot(
-                            path=str(primary), full_page=False, timeout=60000
+                            path=str(primary), full_page=True, timeout=60000
                         )
                 except Exception as retry_error:
                     print("Browser screenshot retry skipped: " + str(retry_error))
