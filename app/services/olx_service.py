@@ -338,16 +338,90 @@ async def _fetch_page(url, timeout_seconds=20):
     return None
 
 
-async def _take_screenshot(url, save_path):
-    """Create evidence from the selected OLX card, never from an author page.
+async def _fetch_listing_html(url):
+    """Fetch one OLX listing's JS-rendered HTML for the local screenshot render.
 
-    Pipeline (one simple path, no Gemini, no fallbacks that always fail):
-      ZenRows screenshot endpoint, JPEG, zoom 0.5, 900x1600 viewport ->
-      byte crop in report_generator.
-    OLX blocks datacenter IPs, so a local Playwright visit is refused; the
-    old "server browser via ZenRows proxy" / "render ZenRows HTML" fallbacks
-    always failed with "title/price was not ready" and only burned 15-20s
-    each per analog. They are removed.
+    The local renderer needs the HYDRATED DOM — price, опис and the gallery
+    <img> src must be present — so this always asks for a JS-rendered response
+    (the plain HTML of an OLX listing is just the app shell). ZenRows js_render
+    is preferred; the generic fetcher is the fallback.
+    """
+    if settings.zenrows_api_key:
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                r = await client.get("https://api.zenrows.com/v1/", params={
+                    "apikey": settings.zenrows_api_key,
+                    "url": url,
+                    "js_render": "true",
+                    "wait": 2500,
+                })
+                r.raise_for_status()
+                if r.text and len(r.text) > 2000:
+                    return r.text
+        except Exception as e:
+            print(f"OLX listing HTML fetch (ZenRows) error: {type(e).__name__}: {e}")
+    try:
+        return await _fetch_page(url, timeout_seconds=40)
+    except Exception as e:
+        print(f"OLX listing HTML fetch (fallback) error: {type(e).__name__}: {e}")
+        return None
+
+
+async def _take_screenshot(url, save_path):
+    """Capture OLX listing evidence by rendering the fetched card HTML LOCALLY.
+
+    Why local render instead of a ZenRows screenshot: the ZenRows OLX screenshot
+    is a lottery. It ignores window sizing, its injected zoom:0.5 applies only
+    sometimes (confirmed from real runs — the SAME code produced a 606px
+    portrait card one time and a 1280px landscape the next), the raw frame width
+    jumps between 1920 and 2908, and screenshot_fullpage returns no image at all
+    for OLX. On tall listings the опис falls below the viewport fold and is cut
+    (the "косой" landscape analog). Rendering the already-fetched, JS-rendered
+    card HTML in the local headless Chromium removes all of that: a fixed
+    portrait viewport, a reliable zoom, a full_page capture (no fold cut) and a
+    wait for the gallery image, so every listing — short or tall — comes out as
+    the same complete, sharp portrait card. The ZenRows screenshot stays only as
+    a last-resort fallback so a render failure never yields zero evidence.
+    """
+    from app.services.browser_screenshot_service import take_browser_screenshots
+
+    # 1) Get the JS-rendered card HTML.
+    html = await _fetch_listing_html(url)
+
+    # 2) Render it locally in a controlled portrait frame at full resolution.
+    #    capture_zoom=1.0: full_page removes the need to shrink for fit, so 1.0
+    #    keeps the listing text at full desktop resolution (OLX_SCREENSHOT_ZOOM
+    #    can still tune it). smart_crop_listing trims rails + caps the aspect.
+    if html and len(html) > 2000:
+        try:
+            _zoom = float(os.environ.get("OLX_SCREENSHOT_ZOOM", "1.0") or 1.0)
+        except ValueError:
+            _zoom = 1.0
+        _zoom = min(1.0, max(0.3, _zoom))
+        try:
+            ok = await take_browser_screenshots(
+                url, save_path, source_html=html, single_frame=True,
+                capture_zoom=_zoom,
+            )
+            if ok and Path(save_path).exists() and Path(save_path).stat().st_size > 1024:
+                print("OLX screenshot: local render OK: " + url)
+                return True
+            print("OLX screenshot: local render returned no image; falling back to ZenRows: " + url)
+        except Exception as e:
+            print(f"OLX screenshot: local render error ({type(e).__name__}: {e}); falling back to ZenRows: {url}")
+    else:
+        print("OLX screenshot: no usable listing HTML; falling back to ZenRows: " + url)
+
+    # 3) Last-resort fallback: the ZenRows viewport screenshot.
+    return await _take_screenshot_zenrows(url, save_path)
+
+
+async def _take_screenshot_zenrows(url, save_path):
+    """Fallback OLX screenshot via the ZenRows viewport endpoint.
+
+    Kept only as a safety net behind the local renderer (_take_screenshot):
+    it is the unreliable zoom-lottery path, but a flawed capture still beats no
+    evidence at all when the local render fails.
     """
     if not settings.zenrows_api_key:
         print("OLX screenshot skipped: no ZENROWS_API_KEY configured")

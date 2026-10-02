@@ -355,6 +355,7 @@ async def take_browser_screenshots(
     source_html: str | None = None,
     single_frame: bool = False,
     extra_wait_ms: int = 0,
+    capture_zoom: float = 0.5,
 ) -> bool:
     """Make verified evidence screenshots of one confirmed listing.
 
@@ -372,7 +373,7 @@ async def take_browser_screenshots(
         async with _screenshot_slots:
             return await _take_browser_screenshots(
                 url, save_path, source_html=source_html, single_frame=single_frame,
-                extra_wait_ms=extra_wait_ms,
+                extra_wait_ms=extra_wait_ms, capture_zoom=capture_zoom,
             )
     except Exception as exc:
         print("Browser screenshot queue error: " + str(exc))
@@ -385,6 +386,7 @@ async def _take_browser_screenshots(
     source_html: str | None = None,
     single_frame: bool = False,
     extra_wait_ms: int = 0,
+    capture_zoom: float = 0.5,
 ) -> bool:
     try:
         from playwright.async_api import async_playwright
@@ -527,16 +529,25 @@ async def _take_browser_screenshots(
             # and characteristics remain available for later verification.
             if single_frame:
                 await page.evaluate("window.scrollTo(0, 0)")
-                # Zoom 50% + cookie hiding via CSS (same approach as ZenRows)
+                # Zoom + cookie/ad hiding via CSS. capture_zoom is a parameter
+                # now: DIM.RIA keeps 0.5 (its default), OLX passes 1.0 for full
+                # text resolution — full_page captures the whole card regardless
+                # of zoom, so a larger zoom only means sharper text, never a cut
+                # опис. Ad + recommendation selectors match the ZenRows prep
+                # (baxter slots, ad-recommendations, adlist-slider, skeleton,
+                # cookies-overlay) so a locally rendered OLX card is as clean as
+                # the server-side one.
                 try:
                     await page.evaluate("""
-                        () => {
-                            document.body.style.zoom = '0.5';
-                            const css = '[data-testid="cookies-bar"],[class*="cookie"],[class*="Cookie"],[id*="cookie"],[class*="consent"],[class*="Consent"],[class*="gdpr"]{display:none !important;visibility:hidden !important;height:0 !important;}';
+                        (zoomValue) => {
+                            document.body.style.zoom = String(zoomValue);
+                            const css = '[data-testid="cookies-bar"],[data-cy="cookies-bar"],[data-testid="cookies-overlay__container"],[data-testid*="cookies"],[class*="cookie"],[class*="Cookie"],[id*="cookie"],[class*="consent"],[class*="Consent"],[class*="gdpr"],[id^="baxter-"],[data-testid="qa-advert-slot"],[data-testid="ad-slot"],[data-testid="ad-recommendations"],[data-testid="adlist-slider"],[class*="skeleton"]{display:none !important;visibility:hidden !important;height:0 !important;}';
                             const s = document.createElement('style');
                             s.innerHTML = css;
                             document.head.appendChild(s);
-                            // Also try clicking cookie accept button
+                            // Also try clicking cookie accept/dismiss button
+                            const dismiss = document.querySelector('[data-testid="dismiss-cookies-banner"]');
+                            if (dismiss) { try { dismiss.click(); } catch (e) {} }
                             const patterns = ['дозволити', 'прийняти', 'погоджу', 'accept', 'згод'];
                             const candidates = [...document.querySelectorAll('button, a, [role="button"]')];
                             const match = candidates.find((el) => {
@@ -545,7 +556,7 @@ async def _take_browser_screenshots(
                             });
                             if (match) match.click();
                         }
-                    """)
+                    """, capture_zoom)
                     # Empirically confirmed via test_dimria_shots_v4.py:
                     # 4000ms after zoom reliably lets the DIM.RIA gallery
                     # finish loading. 1500ms produced ~78KB blank captures
