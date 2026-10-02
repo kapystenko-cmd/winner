@@ -376,18 +376,43 @@ async def _take_screenshot(url, save_path):
     # capture via ZenRows screenshot_selector. If set, fullpage is OFF
     # (ZenRows API returns HTTP 400 REQS004 when both are set).
     selector = (os.environ.get("OLX_SCREENSHOT_SELECTOR", "") or "").strip()
+    # Params MUST match scripts/test_screenshot_live.py exactly — that rig
+    # produces the perfect portrait ~770x909 crop. The previous prod params
+    # diverged in three ways that each broke the capture:
+    #   1. hide_css (zoom:0.5 + cookie hiding) was BUILT but never sent — no
+    #      js_instructions key existed, so the page was snapped at full desktop
+    #      zoom with the cookie banner visible → wide landscape frame.
+    #   2. no window_width/window_height → ZenRows used its default wide
+    #      desktop viewport instead of the 900x1600 portrait window.
+    #   3. screenshot_fullpage=true scrolled the WHOLE page (nav + ads +
+    #      recommended listings) into one giant frame; the test rig uses a
+    #      plain viewport screenshot of the zoomed portrait window instead.
+    # device=desktop + window 900x1600 + zoom:0.5 (via js_instructions) is
+    # what makes the OLX card (gallery+title+price+specs) fit one portrait
+    # frame. smart_crop_listing in report_generator then trims the rails.
     params = {
         "apikey": settings.zenrows_api_key,
         "url": url,
+        "screenshot": "true",
         "screenshot_format": "jpeg",
         "screenshot_quality": 92,
-        "wait": 2500,
+        "wait": 800,
+        "window_width": 900,
+        "window_height": 1600,
         "js_render": "true",
+        "device": "desktop",
+        "js_instructions": json.dumps([
+            {"wait": 1200}, {"evaluate": hide_css}, {"wait": 1800}
+        ]),
     }
     if selector:
+        # Element-only server-side crop override (env). Mutually exclusive
+        # with the viewport screenshot params above per ZenRows (REQS004),
+        # so a selector drops window sizing/fullpage; js_instructions stay.
         params["screenshot_selector"] = selector
-    else:
-        params["screenshot_fullpage"] = "true"
+        params.pop("screenshot", None)
+        params.pop("window_width", None)
+        params.pop("window_height", None)
         print(f"OLX screenshot: using selector '{selector}'")
     try:
         async with httpx.AsyncClient(timeout=60) as client:
