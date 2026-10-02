@@ -358,11 +358,25 @@ async def _take_screenshot(url, save_path):
     # listing (gallery + title + price + first specs) fit into one frame
     # instead of a shallow desktop strip. hide_css also removes cookie
     # banners that would otherwise cover the price block.
+    # Ad + recommendation selectors confirmed by live DOM inspection across 7
+    # different OLX listings (house/townhouse/duplex/part-house/2-storey): all
+    # ad slots carry id^="baxter-" AND data-testid="qa-advert-slot" (the top
+    # banner that pushed the опис out of frame is baxter-top; others:
+    # under-price, parameters, middle, right-column); the grey "Схожі
+    # оголошення" skeleton grid below the card is data-testid="ad-recommendations"
+    # and the author's-listings sliders are data-testid="adlist-slider". Hiding
+    # these at capture time removes the FILLED ad banners that the pixel crop
+    # cannot distinguish from real content, so the capture is the clean card
+    # (photo+title+price+specs+опис+seller+map) every time. These testids are
+    # stable (not the churning css-* classes), so this is robust to redesigns.
     hide_css = (
         "var css="
         "'body { zoom: 0.5 !important; } "
         "[data-testid=\"cookies-bar\"],[data-cy=\"cookies-bar\"],"
-        "#onetrust-banner-sdk,.cookie-banner,[class*=\"cookie\"]"
+        "#onetrust-banner-sdk,.cookie-banner,[class*=\"cookie\"],"
+        "[id^=\"baxter-\"],[data-testid=\"qa-advert-slot\"],[data-testid=\"ad-slot\"],"
+        "[data-testid=\"ad-recommendations\"],[data-testid=\"adlist-slider\"],"
+        "[class*=\"skeleton\"]"
         "{display:none !important;visibility:hidden !important;height:0 !important;}';"
         "var s=document.createElement('style');"
         "s.innerHTML=css;document.head.appendChild(s);"
