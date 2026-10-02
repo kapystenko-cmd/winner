@@ -250,11 +250,30 @@ async def search_analogs(
                 params[f"characteristic[{spec['rooms_characteristic']}][from]"] = int(rooms)
                 params[f"characteristic[{spec['rooms_characteristic']}][to]"] = int(rooms)
 
-            response = await client.get(DIMRIA_BASE + "/search", params=params)
-            response.raise_for_status()
-            payload = _safe_json(response, "GET /search") or {}
-            item_ids = list(payload.get("items") or [])[:max_results]
-            print(f"DIM.RIA search: city={city}, ids={len(item_ids)}, total={payload.get('count', 0)}")
+            # DIM.RIA /search intermittently returns an EMPTY item list with
+            # HTTP 200 (no 429) for a city that returned many moments earlier —
+            # a silent transient / soft rate-limit. Confirmed from two runs of
+            # the SAME subject (Борзна, house, 60 m²) 17 min apart: one got 9
+            # listings in 13.7 s, the next got 0 in 0.3 s. That is the "DIM.RIA
+            # то є, то нема". A city that genuinely has listings should not flip
+            # to 0, so retry a few times on an empty result before accepting it;
+            # a truly empty small-town search just costs a couple of extra
+            # seconds. Detailed logging (state_id/city_id/ids/total/attempt)
+            # makes the next occurrence diagnosable at a glance.
+            item_ids: list = []
+            for attempt in range(1, 4):
+                response = await client.get(DIMRIA_BASE + "/search", params=params)
+                response.raise_for_status()
+                payload = _safe_json(response, f"GET /search (try {attempt})") or {}
+                item_ids = list(payload.get("items") or [])[:max_results]
+                print(
+                    f"DIM.RIA search: city={city}, state_id={state_id}, city_id={city_id}, "
+                    f"ids={len(item_ids)}, total={payload.get('count', 0)}, attempt={attempt}"
+                )
+                if item_ids:
+                    break
+                if attempt < 3:
+                    await asyncio.sleep(1.5)
 
             # Cascade for houses/land: widen to oblast if city gave < 5
             if property_type in ("house", "land") and len(item_ids) < 5 and state_id:
