@@ -373,6 +373,7 @@ async def _take_screenshot(url, save_path):
         "var css="
         "'body { zoom: 0.5 !important; } "
         "[data-testid=\"cookies-bar\"],[data-cy=\"cookies-bar\"],"
+        "[data-testid=\"cookies-overlay__container\"],[data-testid*=\"cookies\"],"
         "#onetrust-banner-sdk,.cookie-banner,[class*=\"cookie\"],"
         "[id^=\"baxter-\"],[data-testid=\"qa-advert-slot\"],[data-testid=\"ad-slot\"],"
         "[data-testid=\"ad-recommendations\"],[data-testid=\"adlist-slider\"],"

@@ -129,6 +129,40 @@ def smart_crop_listing(image_path, source: str = "") -> tuple:
             else:
                 bg_run = 0
 
+        # Anti-collapse: the center-out walk above starts at the horizontal
+        # centre, which on a 2-column OLX card (photo | price/map) can land in
+        # the white GUTTER between the columns — then both walks hit background
+        # immediately and collapse to a sliver (seen on a real report: a 148px
+        # crop, unreadable once placed in Word). If the kept width is
+        # implausibly narrow for a listing card, re-detect by spanning from the
+        # first to the last run of content columns across the WHOLE frame: this
+        # keeps both columns and the gutter while still dropping the empty side
+        # rails. 0.55 is below a normal full-card width but well above the
+        # sliver, and single-column DIM.RIA cards that center-out already
+        # handles stay above it, so they are left untouched.
+        if right_s - left_s < sw * 0.55:
+            run = 0
+            first_c = None
+            for x in range(sw):
+                if col_range[x] > BG_RANGE:
+                    run += 1
+                    if run >= RUN_REQUIRED and first_c is None:
+                        first_c = x - run + 1
+                else:
+                    run = 0
+            run = 0
+            last_c = None
+            for x in range(sw - 1, -1, -1):
+                if col_range[x] > BG_RANGE:
+                    run += 1
+                    if run >= RUN_REQUIRED and last_c is None:
+                        last_c = x + run - 1
+                else:
+                    run = 0
+            if (first_c is not None and last_c is not None
+                    and last_c - first_c > right_s - left_s):
+                left_s, right_s = first_c, last_c + 1
+
         # Safety: content width must be >= 20% of frame; else fall back.
         if right_s - left_s < sw * 0.20:
             left_s = int(sw * 0.03)
