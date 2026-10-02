@@ -369,9 +369,23 @@ async def _take_screenshot(url, save_path):
     # cannot distinguish from real content, so the capture is the clean card
     # (photo+title+price+specs+опис+seller+map) every time. These testids are
     # stable (not the churning css-* classes), so this is robust to redesigns.
+    # Capture zoom is tunable live via OLX_SCREENSHOT_ZOOM. zoom:0.5 shrinks the
+    # whole page to 50%, which is what lets the two-column card fit a portrait
+    # frame — but it also HALVES the pixel density of the listing text, which is
+    # the main cause of soft/unreadable опис text in the report. Since we now
+    # capture fullpage and crop to the card anyway (fit no longer depends on
+    # zoom), a larger value keeps more text resolution: 0.5 = smallest/safest,
+    # 0.67 ~ +33% text pixels, 1.0 = full desktop resolution (sharpest, tallest
+    # frame). Default stays 0.5 so nothing changes until tested; raise it on the
+    # server and compare sharpness without a code change.
+    try:
+        _zoom = float(os.environ.get("OLX_SCREENSHOT_ZOOM", "0.5") or 0.5)
+    except ValueError:
+        _zoom = 0.5
+    _zoom = min(1.0, max(0.3, _zoom))
     hide_css = (
         "var css="
-        "'body { zoom: 0.5 !important; } "
+        "'body { zoom: " + str(_zoom) + " !important; } "
         "[data-testid=\"cookies-bar\"],[data-cy=\"cookies-bar\"],"
         "[data-testid=\"cookies-overlay__container\"],[data-testid*=\"cookies\"],"
         "#onetrust-banner-sdk,.cookie-banner,[class*=\"cookie\"],"
