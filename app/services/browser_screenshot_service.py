@@ -437,8 +437,23 @@ async def _take_browser_screenshots(
                 )
                 if "<base " not in markup.casefold():
                     markup = '<base href="' + url.replace('"', '%22') + '">' + markup
+                # Strip <script> tags. The scraper HTML is ALREADY the hydrated
+                # DOM (ZenRows js_render ran OLX's JS and serialized the result),
+                # so re-running OLX's own React bundle inside this about:blank
+                # page only re-mounts the app on a foreign origin, fails its API
+                # calls and WIPES the server HTML — title/price/опис vanish, the
+                # "title/price was not ready" guard trips, and the whole local
+                # render is discarded in favour of the ZenRows screenshot
+                # lottery (every OLX analog in report_70 fell back this way).
+                # With scripts removed the static rendered DOM stays frozen;
+                # <img> and <link rel=stylesheet> still load so the card renders.
+                markup = re.sub(
+                    r"<script\b[^>]*>.*?</script>", "", markup,
+                    flags=re.IGNORECASE | re.DOTALL,
+                )
+                markup = re.sub(r"<script\b[^>]*/>", "", markup, flags=re.IGNORECASE)
                 await page.set_content(markup, wait_until="domcontentloaded", timeout=60000)
-                print("Browser screenshot source: scraper HTML for " + url)
+                print("Browser screenshot source: scraper HTML (scripts stripped) for " + url)
             else:
                 await page.goto(url, wait_until="domcontentloaded", timeout=60000)
                 try:
