@@ -338,16 +338,117 @@ async def _fetch_page(url, timeout_seconds=20):
     return None
 
 
-async def _take_screenshot(url, save_path):
-    """Create evidence from the selected OLX card, never from an author page.
+async def _fetch_listing_html(url):
+    """Fetch one OLX listing's JS-rendered HTML for the local screenshot render.
 
-    Pipeline (one simple path, no Gemini, no fallbacks that always fail):
-      ZenRows screenshot endpoint, JPEG, zoom 0.5, 900x1600 viewport ->
-      byte crop in report_generator.
-    OLX blocks datacenter IPs, so a local Playwright visit is refused; the
-    old "server browser via ZenRows proxy" / "render ZenRows HTML" fallbacks
-    always failed with "title/price was not ready" and only burned 15-20s
-    each per analog. They are removed.
+    The local renderer needs the HYDRATED DOM — price, опис and the gallery
+    <img> src must be present — so this always asks for a JS-rendered response
+    (the plain HTML of an OLX listing is just the app shell). ZenRows js_render
+    is preferred; the generic fetcher is the fallback.
+    """
+    if settings.zenrows_api_key:
+        try:
+            async with httpx.AsyncClient(timeout=90) as client:
+                # wait_for the description block: OLX renders the nav + ad shell
+                # first and injects the listing body (price, specs, опис, gallery)
+                # a moment later via a client API call. A plain js_render with a
+                # fixed 2.5s wait returned that SHELL — ~300KB of HTML with no
+                # price text — so the local render's title/price guard tripped
+                # and every OLX analog fell back to the ZenRows screenshot
+                # lottery. wait_for holds until the опис element exists, so the
+                # returned HTML is the fully hydrated card. The markers logged
+                # below make a shell response obvious at a glance next time.
+                r = await client.get("https://api.zenrows.com/v1/", params={
+                    "apikey": settings.zenrows_api_key,
+                    "url": url,
+                    "js_render": "true",
+                    "wait_for": "[data-cy=ad_description]",
+                    "wait": 3500,
+                })
+                r.raise_for_status()
+                text = r.text or ""
+                has_price = bool(re.search(r"\d[\d\s]{2,}\s*(?:грн|₴|\$)", text))
+                has_desc = "ad_description" in text
+                print(f"OLX listing HTML: len={len(text)}, price={has_price}, desc={has_desc}: {url}")
+                if len(text) > 2000:
+                    return text
+        except Exception as e:
+            print(f"OLX listing HTML fetch (ZenRows) error: {type(e).__name__}: {e}")
+    try:
+        return await _fetch_page(url, timeout_seconds=40)
+    except Exception as e:
+        print(f"OLX listing HTML fetch (fallback) error: {type(e).__name__}: {e}")
+        return None
+
+
+async def _take_screenshot(url, save_path):
+    """Capture OLX listing evidence by rendering the fetched card HTML LOCALLY.
+
+    Why local render instead of a ZenRows screenshot: the ZenRows OLX screenshot
+    is a lottery. It ignores window sizing, its injected zoom:0.5 applies only
+    sometimes (confirmed from real runs — the SAME code produced a 606px
+    portrait card one time and a 1280px landscape the next), the raw frame width
+    jumps between 1920 and 2908, and screenshot_fullpage returns no image at all
+    for OLX. On tall listings the опис falls below the viewport fold and is cut
+    (the "косой" landscape analog). Rendering the already-fetched, JS-rendered
+    card HTML in the local headless Chromium removes all of that: a fixed
+    portrait viewport, a reliable zoom, a full_page capture (no fold cut) and a
+    wait for the gallery image, so every listing — short or tall — comes out as
+    the same complete, sharp portrait card. The ZenRows screenshot stays only as
+    a last-resort fallback so a render failure never yields zero evidence.
+    """
+    from app.services.browser_screenshot_service import take_browser_screenshots
+
+    # Local render is OFF by default: it costs an extra (premium) ZenRows HTML
+    # fetch AND ~20 s per analog, then STILL falls back to the ZenRows
+    # screenshot — doubling the quota spend on a path that currently always
+    # fails. OLX hides the listing body until its own JS hydrates (rendered
+    # DOM showed hasDescEl=True but innerText=980, no price), and the HTML it
+    # ships both breaks when its scripts run and stays hidden when they are
+    # stripped, so set_content can't surface the card. Kept behind
+    # OLX_LOCAL_RENDER=1 for further experiments; production goes straight to
+    # the ZenRows screenshot (one call, ~80% good — the zoom lottery is handled
+    # by the smart_crop guards).
+    if os.environ.get("OLX_LOCAL_RENDER", "0") != "1":
+        return await _take_screenshot_zenrows(url, save_path)
+
+    # 1) Get the JS-rendered card HTML.
+    html = await _fetch_listing_html(url)
+
+    # 2) Render it locally in a controlled portrait frame at full resolution.
+    #    capture_zoom=1.0: full_page removes the need to shrink for fit, so 1.0
+    #    keeps the listing text at full desktop resolution (OLX_SCREENSHOT_ZOOM
+    #    can still tune it). smart_crop_listing trims rails + caps the aspect.
+    if html and len(html) > 2000:
+        try:
+            _zoom = float(os.environ.get("OLX_SCREENSHOT_ZOOM", "1.0") or 1.0)
+        except ValueError:
+            _zoom = 1.0
+        _zoom = min(1.0, max(0.3, _zoom))
+        try:
+            ok = await take_browser_screenshots(
+                url, save_path, source_html=html, single_frame=True,
+                capture_zoom=_zoom,
+            )
+            if ok and Path(save_path).exists() and Path(save_path).stat().st_size > 1024:
+                print("OLX screenshot: local render OK: " + url)
+                return True
+            print("OLX screenshot: local render returned no image; falling back to ZenRows: " + url)
+        except Exception as e:
+            print(f"OLX screenshot: local render error ({type(e).__name__}: {e}); falling back to ZenRows: {url}")
+    else:
+        print("OLX screenshot: no usable listing HTML; falling back to ZenRows: " + url)
+
+    # 3) Last-resort fallback: the ZenRows viewport screenshot.
+    return await _take_screenshot_zenrows(url, save_path)
+
+
+async def _take_screenshot_zenrows(url, save_path):
+    """Fallback OLX screenshot via the ZenRows viewport endpoint.
+
+    Kept only as a safety net behind the local renderer (_take_screenshot):
+    it is the unreliable zoom-lottery path, but a flawed capture still beats no
+    evidence at all when the local render fails.
     """
     if not settings.zenrows_api_key:
         print("OLX screenshot skipped: no ZENROWS_API_KEY configured")
@@ -358,28 +459,64 @@ async def _take_screenshot(url, save_path):
     # listing (gallery + title + price + first specs) fit into one frame
     # instead of a shallow desktop strip. hide_css also removes cookie
     # banners that would otherwise cover the price block.
-    hide_css = (
-        "var css="
-        "'body { zoom: 0.5 !important; } "
-        "[data-testid=\"cookies-bar\"],[data-cy=\"cookies-bar\"],"
-        "#onetrust-banner-sdk,.cookie-banner,[class*=\"cookie\"]"
+    # Ad + recommendation selectors confirmed by live DOM inspection across 7
+    # different OLX listings (house/townhouse/duplex/part-house/2-storey): all
+    # ad slots carry id^="baxter-" AND data-testid="qa-advert-slot" (the top
+    # banner that pushed the опис out of frame is baxter-top; others:
+    # under-price, parameters, middle, right-column); the grey "Схожі
+    # оголошення" skeleton grid below the card is data-testid="ad-recommendations"
+    # and the author's-listings sliders are data-testid="adlist-slider". Hiding
+    # these at capture time removes the FILLED ad banners that the pixel crop
+    # cannot distinguish from real content, so the capture is the clean card
+    # (photo+title+price+specs+опис+seller+map) every time. These testids are
+    # stable (not the churning css-* classes), so this is robust to redesigns.
+    # Capture zoom is tunable live via OLX_SCREENSHOT_ZOOM. zoom:0.5 shrinks the
+    # whole page to 50%, which is what lets the two-column card fit a portrait
+    # frame — but it also HALVES the pixel density of the listing text, which is
+    # the main cause of soft/unreadable опис text in the report. Since we now
+    # capture fullpage and crop to the card anyway (fit no longer depends on
+    # zoom), a larger value keeps more text resolution: 0.5 = smallest/safest,
+    # 0.67 ~ +33% text pixels, 1.0 = full desktop resolution (sharpest, tallest
+    # frame). Default stays 0.5 so nothing changes until tested; raise it on the
+    # server and compare sharpness without a code change.
+    try:
+        _zoom = float(os.environ.get("OLX_SCREENSHOT_ZOOM", "0.5") or 0.5)
+    except ValueError:
+        _zoom = 0.5
+    _zoom = min(1.0, max(0.3, _zoom))
+    # Capture = ZenRows VIEWPORT screenshot (screenshot=true), NOT fullpage.
+    # Hard lesson from reports 63 & 67: screenshot_fullpage returns NO image at
+    # all for OLX here (report_63, the original fullpage code, had zero analog
+    # screenshots; report_67, the fullpage rewrite, same) — ZenRows only yields
+    # an image for OLX on the viewport path. The viewport path is what produced
+    # the working captures in reports 64/65/66. So: viewport + window + device,
+    # with zoom (default 0.5) shrinking the card to fit one above-the-fold
+    # frame. Before the shot, prep_js dismisses the cookie bar and hides the
+    # ad/recommendation blocks (the filled top banner the pixel crop can't tell
+    # from content); smart_crop_listing then trims rails, the empty top band,
+    # and caps the aspect — its anti-collapse guard fixes the 148px sliver.
+    # OLX_SCREENSHOT_ZOOM still overrides zoom for sharpness experiments, but in
+    # the viewport path raising it too far can push the опис below the fold.
+    prep_js = (
+        "try{var b=document.querySelector('[data-testid=\"dismiss-cookies-banner\"]');if(b)b.click();}catch(e){}"
+        "try{var pats=['прийня','погодж','приймаю','дозволит','зрозум'];"
+        "var cands=[].slice.call(document.querySelectorAll('button,[role=\"button\"],a'));"
+        "for(var i=0;i<cands.length;i++){var t=(cands[i].textContent||'').trim().toLowerCase();"
+        "if(t.length<40&&pats.some(function(p){return t.indexOf(p)>-1;})){cands[i].click();break;}}}catch(e){}"
+        "var css='body{zoom:" + str(_zoom) + " !important;}"
+        "[data-testid=\"cookies-bar\"],[data-cy=\"cookies-bar\"],[data-testid=\"cookies-overlay__container\"],[data-testid*=\"cookies\"],"
+        "#onetrust-banner-sdk,.cookie-banner,[class*=\"cookie\"],"
+        "[id^=\"baxter-\"],[data-testid=\"qa-advert-slot\"],[data-testid=\"ad-slot\"],"
+        "[data-testid=\"ad-recommendations\"],[data-testid=\"adlist-slider\"],[class*=\"skeleton\"]"
         "{display:none !important;visibility:hidden !important;height:0 !important;}';"
-        "var s=document.createElement('style');"
-        "s.innerHTML=css;document.head.appendChild(s);"
+        "var s=document.createElement('style');s.innerHTML=css;document.head.appendChild(s);"
+        "try{var all=document.querySelectorAll('body *');for(var j=0;j<all.length;j++){"
+        "var p=getComputedStyle(all[j]).position;if(p==='fixed'||p==='sticky'){"
+        "all[j].style.setProperty('position','static','important');}}}catch(e){}"
     )
-    # Viewport reverted to 900x1600 for OLX. Report 60 proved that at
-    # window_width=1800 ZenRows ignored our window_width AND our zoom:0.5
-    # CSS injection, returning a landscape 1920x897 frame of its own
-    # choosing (likely a hardcoded profile ZenRows uses when it has to
-    # bypass OLX's anti-bot). With window_width=900 ZenRows respects the
-    # setting and zoom:0.5 does fit the gallery+price+specs into a
-    # portrait frame — this is the configuration that produced the good
-    # screenshots in older working builds.
-    #
-    # Wait order: top-level wait small, then js_instructions wait before
-    # evaluate (let OLX hydrate), evaluate (apply zoom + hide cookies),
-    # wait again (let the browser reflow at the new scale before the
-    # snapshot is taken).
+    # Optional override: OLX_SCREENSHOT_SELECTOR env for element-only capture via
+    # ZenRows screenshot_selector (mutually exclusive with fullpage — REQS004).
+    selector = (os.environ.get("OLX_SCREENSHOT_SELECTOR", "") or "").strip()
     params = {
         "apikey": settings.zenrows_api_key,
         "url": url,
@@ -391,12 +528,27 @@ async def _take_screenshot(url, save_path):
         "window_height": 1600,
         "js_render": "true",
         "device": "desktop",
+        # wait_for the description block BEFORE hiding/capturing: a slow listing
+        # could otherwise be snapped with only the header+photo rendered and the
+        # опис/specs still missing, which smart_crop then trimmed into a short
+        # landscape frame (the "косой" analog image2 in report_68). Waiting for
+        # [data-cy="ad_description"] guarantees the full card is present first.
         "js_instructions": json.dumps([
             {"wait": 1200},
-            {"evaluate": hide_css},
-            {"wait": 1800},
+            {"wait_for": "[data-cy=\"ad_description\"]"},
+            {"evaluate": prep_js},
+            {"wait": 1500},
         ]),
     }
+    if selector:
+        # Element-only server-side crop override. screenshot and selector cannot
+        # both be set (ZenRows 400 REQS004), so drop the viewport screenshot +
+        # window sizing when a selector is given; the prep js_instructions stay.
+        params["screenshot_selector"] = selector
+        params.pop("screenshot", None)
+        params.pop("window_width", None)
+        params.pop("window_height", None)
+        print(f"OLX screenshot: using selector '{selector}'")
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             response = await client.get("https://api.zenrows.com/v1/", params=params)

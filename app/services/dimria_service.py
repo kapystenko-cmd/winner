@@ -163,16 +163,37 @@ async def _resolve_city(city: str, client: httpx.AsyncClient, region: str | None
     semaphore = asyncio.Semaphore(5)
 
     async def find_in_state(state: dict[str, Any]) -> tuple[int | None, int] | None:
+        # A single failed oblast must NEVER abort the whole city resolution.
+        # Root cause of "DIM.RIA то 9, то 0" for the same subject: when the
+        # address carries no oblast, every oblast's /cities list is scanned, and
+        # DIM.RIA answers 429 to some of those bursts. The old code called
+        # response.raise_for_status() here, so that 429 propagated out of the
+        # as_completed loop and the ENTIRE resolution failed → 0 analogs. With
+        # an oblast in the address only one oblast was checked, so it usually
+        # resolved → 9. Retrying 429 with back-off and swallowing a persistent
+        # failure (return None) makes resolution robust regardless of whether
+        # the OCR address happened to include the oblast.
+        state_id = int(state["stateID"])
         async with semaphore:
-            state_id = int(state["stateID"])
-            response = await client.get(
-                DIMRIA_BASE + f"/cities/{state_id}",
-                params={"api_key": settings.dimria_api_key, "lang_id": 4},
-            )
-            response.raise_for_status()
-            for item in _safe_json(response, f"GET /cities/{state_id}") or []:
-                if wanted == _key(item.get("name")):
-                    return state_id, int(item["cityID"])
+            for attempt in range(3):
+                try:
+                    response = await client.get(
+                        DIMRIA_BASE + f"/cities/{state_id}",
+                        params={"api_key": settings.dimria_api_key, "lang_id": 4},
+                    )
+                    if response.status_code == 429:
+                        await asyncio.sleep(1.0 * (attempt + 1))
+                        continue
+                    response.raise_for_status()
+                    for item in _safe_json(response, f"GET /cities/{state_id}") or []:
+                        if wanted == _key(item.get("name")):
+                            return state_id, int(item["cityID"])
+                    return None
+                except Exception as error:
+                    if attempt >= 2:
+                        print(f"DIM.RIA cities/{state_id} failed after retries: {error}")
+                        return None
+                    await asyncio.sleep(0.8 * (attempt + 1))
         return None
 
     states_to_check = region_states or states
@@ -250,21 +271,68 @@ async def search_analogs(
                 params[f"characteristic[{spec['rooms_characteristic']}][from]"] = int(rooms)
                 params[f"characteristic[{spec['rooms_characteristic']}][to]"] = int(rooms)
 
-            response = await client.get(DIMRIA_BASE + "/search", params=params)
-            response.raise_for_status()
-            payload = _safe_json(response, "GET /search") or {}
-            item_ids = list(payload.get("items") or [])[:max_results]
-            print(f"DIM.RIA search: city={city}, ids={len(item_ids)}, total={payload.get('count', 0)}")
+            # DIM.RIA /search intermittently returns an EMPTY item list with
+            # HTTP 200 (no 429) for a city that returned many moments earlier —
+            # a silent transient / soft rate-limit. Confirmed from two runs of
+            # the SAME subject (Борзна, house, 60 m²) 17 min apart: one got 9
+            # listings in 13.7 s, the next got 0 in 0.3 s. That is the "DIM.RIA
+            # то є, то нема". A city that genuinely has listings should not flip
+            # to 0, so retry a few times on an empty result before accepting it;
+            # a truly empty small-town search just costs a couple of extra
+            # seconds. Detailed logging (state_id/city_id/ids/total/attempt)
+            # makes the next occurrence diagnosable at a glance.
+            # The ACTUAL "DIM.RIA то є, то нема" cause, confirmed from a real
+            # log: the city resolves fine (city_id=548, state_id=6) but the
+            # /search call itself answers 429 Too Many Requests — and the old
+            # code called response.raise_for_status() here, so that 429
+            # propagated out and the whole DIM.RIA search returned 0. DIM.RIA
+            # rate-limits bursts, so retry /search on BOTH a 429 and an empty
+            # result (the earlier silent-empty transient), with an increasing
+            # back-off, before accepting 0.
+            item_ids: list = []
+            for attempt in range(1, 5):
+                response = await client.get(DIMRIA_BASE + "/search", params=params)
+                if response.status_code == 429:
+                    print(f"DIM.RIA search 429 (attempt {attempt}) for city={city}; backing off")
+                    if attempt < 4:
+                        await asyncio.sleep(2.0 * attempt)
+                        continue
+                    response.raise_for_status()
+                response.raise_for_status()
+                payload = _safe_json(response, f"GET /search (try {attempt})") or {}
+                item_ids = list(payload.get("items") or [])[:max_results]
+                print(
+                    f"DIM.RIA search: city={city}, state_id={state_id}, city_id={city_id}, "
+                    f"ids={len(item_ids)}, total={payload.get('count', 0)}, attempt={attempt}"
+                )
+                if item_ids:
+                    break
+                if attempt < 4:
+                    await asyncio.sleep(1.5)
 
-            # Cascade for houses/land: widen to oblast if city gave < 5
+            # Cascade for houses/land: widen to oblast if city gave < 5. Wrapped
+            # so a 429 / error here only skips the widening, never aborts the
+            # city results already collected above.
             if property_type in ("house", "land") and len(item_ids) < 5 and state_id:
                 print(f"DIM.RIA cascade: city gave {len(item_ids)}, widening to oblast (state_id={state_id})")
                 oblast_params = dict(params)
                 oblast_params.pop("city_id", None)
-                oblast_resp = await client.get(DIMRIA_BASE + "/search", params=oblast_params)
-                oblast_resp.raise_for_status()
-                oblast_payload = _safe_json(oblast_resp, "GET /search oblast") or {}
-                oblast_ids = list(oblast_payload.get("items") or [])[:max_results]
+                oblast_ids = []
+                for attempt in range(1, 4):
+                    try:
+                        oblast_resp = await client.get(DIMRIA_BASE + "/search", params=oblast_params)
+                        if oblast_resp.status_code == 429:
+                            if attempt < 3:
+                                await asyncio.sleep(2.0 * attempt)
+                                continue
+                            break
+                        oblast_resp.raise_for_status()
+                        oblast_payload = _safe_json(oblast_resp, "GET /search oblast") or {}
+                        oblast_ids = list(oblast_payload.get("items") or [])[:max_results]
+                        break
+                    except Exception as error:
+                        print(f"DIM.RIA cascade oblast error (attempt {attempt}): {error}")
+                        break
                 print(f"DIM.RIA cascade oblast: {len(oblast_ids)} ids")
                 seen = set(str(i) for i in item_ids)
                 for oid in oblast_ids:
@@ -336,57 +404,85 @@ async def _get_detail(item_id: int | str, client: httpx.AsyncClient) -> dict[str
 async def take_screenshot(url: str, save_path: str) -> bool:
     """Capture one DIM.RIA listing card for inclusion in a report.
 
-    Pipeline (one simple path, no Gemini, no dead crop import):
-      Local Playwright with zoom 0.5 at 900x1600 ->
-      ZenRows screenshot endpoint as fallback (JPEG, zoom 0.5, 900x1600) ->
-      ScraperAPI as last resort.
-    Percentage crop is applied once, centrally, in report_generator.py.
+    Pipeline:
+      ZenRows screenshot endpoint (JPEG, portrait DIM.RIA mobile-ish
+      layout) -> local Playwright as fallback -> ScraperAPI last resort.
+    Percentage crop is applied once, centrally, in report_generator.py
+    via smart_crop_listing.
+
+    ZenRows first (previously Playwright first): the ZenRows capture
+    at DIM.RIA produces a 1920x921 landscape frame whose middle
+    column IS the listing card at ~0.86 aspect, and smart_crop_listing
+    trims the empty rails perfectly on it. Playwright returned a
+    full_page=True 1800xN capture of the FULL desktop layout which has
+    no empty rails to trim (content runs edge-to-edge in desktop
+    layout), so smart_crop produced a landscape frame. The ZenRows
+    output matches the user's template screenshots exactly, so put it
+    first.
     """
     import os
     from pathlib import Path
 
     from app.services.browser_screenshot_service import take_browser_screenshots
-    # Local Chromium first — unlike OLX, DIM.RIA does not block the server IP.
-    if await take_browser_screenshots(url, save_path, single_frame=True, extra_wait_ms=2500):
-        return True
 
     if settings.zenrows_api_key:
-        hide_css = (
-            "var css="
-            "'body { zoom: 0.5 !important; } "
-            "[data-testid=\"cookies-bar\"],[data-testid*=\"cookie\"],"
-            "[class*=\"cookie\"],[class*=\"Cookie\"],[id*=\"cookie\"],"
-            "[class*=\"consent\"],[class*=\"Consent\"],[id*=\"consent\"],"
-            "[class*=\"gdpr\"],[class*=\"Gdpr\"]"
+        # Mirror the WORKING OLX viewport approach. The old DIM.RIA path had
+        # the same three bugs OLX once had: (1) hide_css/zoom was built but
+        # never sent (no js_instructions), so it snapped at full desktop zoom;
+        # (2) it used screenshot_fullpage, which ZenRows does NOT return an
+        # image for; (3) it wrote response.content without an is_image check,
+        # so a non-image 200 was saved as a corrupt .png and still returned
+        # True — the analog then showed with no picture. Now: viewport
+        # screenshot + window + device + zoom via js_instructions + is_image.
+        try:
+            _zoom = float(os.environ.get("DIMRIA_SCREENSHOT_ZOOM", "0.5") or 0.5)
+        except ValueError:
+            _zoom = 0.5
+        _zoom = min(1.0, max(0.3, _zoom))
+        prep_js = (
+            "var css='body{zoom:" + str(_zoom) + " !important;}"
+            "[data-testid=\"cookies-bar\"],[data-testid*=\"cookie\"],[class*=\"cookie\"],"
+            "[class*=\"Cookie\"],[id*=\"cookie\"],[class*=\"consent\"],[class*=\"Consent\"],"
+            "[id*=\"consent\"],[class*=\"gdpr\"],[class*=\"Gdpr\"]"
             "{display:none !important;visibility:hidden !important;height:0 !important;}';"
-            "var s=document.createElement('style');"
-            "s.innerHTML=css;document.head.appendChild(s);"
+            "var s=document.createElement('style');s.innerHTML=css;document.head.appendChild(s);"
         )
-        # Viewport reverted to 900x1600. OLX log showed ZenRows ignoring
-        # window_width when it had to bypass anti-bot; stay on the known-
-        # working size here. DIM.RIA's primary path is local Playwright
-        # (which does use 1800x2160), this is only the fallback.
+        selector_dim = os.environ.get("DIMRIA_SCREENSHOT_SELECTOR", "").strip()
+        _dim_params = {
+            "apikey": settings.zenrows_api_key, "url": url,
+            "screenshot": "true",
+            "screenshot_format": "jpeg", "screenshot_quality": 92,
+            "wait": 800, "window_width": 900, "window_height": 1600,
+            "js_render": "true", "device": "desktop",
+            "js_instructions": json.dumps([
+                {"wait": 1200}, {"evaluate": prep_js}, {"wait": 1800},
+            ]),
+        }
+        if selector_dim:
+            # Element-only crop override (mutually exclusive with viewport
+            # screenshot + window sizing per ZenRows REQS004).
+            _dim_params["screenshot_selector"] = selector_dim
+            _dim_params.pop("screenshot", None)
+            _dim_params.pop("window_width", None)
+            _dim_params.pop("window_height", None)
+            print(f"DIM.RIA screenshot: using selector '{selector_dim}'")
         try:
             async with httpx.AsyncClient(timeout=60, headers=_REQUEST_HEADERS) as client:
-                response = await client.get("https://api.zenrows.com/v1/", params={
-                    "apikey": settings.zenrows_api_key, "url": url,
-                    "screenshot": "true",
-                    "screenshot_format": "jpeg",
-                    "screenshot_quality": 92,
-                    "js_render": "true", "wait": 800,
-                    "window_width": 900, "window_height": 1600,
-                    "device": "desktop",
-                    "js_instructions": json.dumps([
-                        {"wait": 1200},
-                        {"evaluate": hide_css},
-                        {"wait": 1800},
-                    ]),
-                })
+                response = await client.get("https://api.zenrows.com/v1/", params=_dim_params)
                 response.raise_for_status()
-                Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-                Path(save_path).write_bytes(response.content)
-                print("DIM.RIA screenshot created through ZenRows: " + url)
-                return True
+                content_type = str(response.headers.get("content-type", "")).casefold()
+                is_image = (
+                    len(response.content) > 1024
+                    and ("image/" in content_type
+                         or response.content.startswith(b"\x89PNG")
+                         or response.content.startswith(b"\xff\xd8"))
+                )
+                if is_image:
+                    Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+                    Path(save_path).write_bytes(response.content)
+                    print("DIM.RIA screenshot created through ZenRows: " + url)
+                    return True
+                print("DIM.RIA screenshot: ZenRows did not return an image for " + url)
         except httpx.HTTPStatusError as error:
             body_snippet = ""
             try:
@@ -396,6 +492,15 @@ async def take_screenshot(url: str, save_path: str) -> bool:
             print(f"Screenshot ZR error: HTTP {error.response.status_code} for url={error.request.url} body={body_snippet!r}")
         except Exception as error:
             print(f"Screenshot ZR error: {type(error).__name__}: {error!r}")
+
+    # Fallback: local Playwright. DIM.RIA doesn't block the server IP,
+    # so a direct Chromium visit works, but the resulting frame has
+    # desktop-layout content running edge-to-edge (no empty rails for
+    # smart_crop to trim). The output is still useful as a last-resort
+    # evidence image when ZenRows is down or quota-exhausted.
+    if await take_browser_screenshots(url, save_path, single_frame=True, extra_wait_ms=2500):
+        print("DIM.RIA screenshot: local Playwright fallback: " + url)
+        return True
 
     scraper_key = getattr(settings, "scraper_api_key", "") or os.environ.get("SCRAPER_API_KEY", "")
     if scraper_key and getattr(settings, "scraperapi_enabled", True):

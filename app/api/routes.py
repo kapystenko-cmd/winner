@@ -149,6 +149,21 @@ async def _capture_selected_analog_screenshots(report: Report, analogs: list[Ana
             print(f"Screenshots: analog {candidate.id} has no URL, skipped")
             return False
         path = os.path.join(screenshot_dir, f"analog_{candidate.rank}.png")
+        # Reuse an already-captured screenshot instead of paying for it again.
+        # Generation runs inside the HTTP request, so a dropped tab / crashed
+        # client / retry re-enters this stage — and each capture is a paid
+        # ZenRows call. If this analog's file already exists from an earlier
+        # (interrupted) run, reuse it: the evidence is identical and the user's
+        # provider quota is not spent twice. A tiny/corrupt leftover (<2 KB) is
+        # ignored and re-captured.
+        try:
+            if os.path.exists(path) and os.path.getsize(path) > 2048:
+                candidate.screenshot_path = path
+                candidate.screenshot_verified = True
+                print(f"Screenshots: reusing existing capture for analog rank={candidate.rank}: {path}")
+                return True
+        except OSError:
+            pass
         screenshotter = take_olx_screenshot if str(candidate.source).casefold() == "olx" else take_screenshot
         try:
             ok = await screenshotter(candidate.url, path)
@@ -193,7 +208,12 @@ async def _capture_selected_analog_screenshots(report: Report, analogs: list[Ana
     results = []
     for candidate in analogs:
         results.append(await capture(candidate))
-        await asyncio.sleep(1.5)
+        # 2.5s pause between captures. Each ZenRows screenshot takes
+        # ~15-30 s itself (fullpage rendering), but sometimes fails
+        # fast with HTTP 400/429 — the pause gives the provider room
+        # to breathe between failed-fast retries and prevents the
+        # concurrency gate from firing all captures in the same second.
+        await asyncio.sleep(2.5)
     created = sum(bool(value) for value in results)
     journal = dict(report.search_journal or {})
     journal["final_screenshots"] = {
@@ -904,7 +924,52 @@ async def confirm_ocr_data(
         "conflict_fields": [item.get("field") for item in ocr_data.get("_conflicts", [])],
         "note": ocr_data["_appraiser_confirmation_note"],
     }))
-    return {"report_id": str(report.id), "status": "ocr_confirmed", "ocr_data": ocr_data}
+
+    # Duplicate detection (warn only). If this appraiser already has a report
+    # for the SAME property, surface it so the frontend can say "такий звіт вже
+    # є" and offer Продовжити наявний / Створити новий. Match on the cadastral
+    # number — the reliable unique key; the OCR address is too inconsistent to
+    # match on (same object came out as "м. Борзна" and "Борзна, Ніжинський
+    # район, Чернігівська область"). As a softer fallback, when there is no
+    # cadastral number, match an exact normalized address + the same area. This
+    # never blocks — the appraiser decides; confirm-ocr already succeeded.
+    duplicates = []
+    cad = (report.cadastral_number or "").strip()
+    if cad:
+        dup_q = select(Report).where(
+            Report.user_id == user.id, Report.id != report.id,
+            Report.cadastral_number == cad,
+        ).order_by(Report.created_at.desc()).limit(5)
+        match_reason = "cadastral_number"
+    elif report.address:
+        dup_q = select(Report).where(
+            Report.user_id == user.id, Report.id != report.id,
+            func.lower(func.trim(Report.address)) == report.address.strip().lower(),
+            Report.area_sqm == report.area_sqm,
+        ).order_by(Report.created_at.desc()).limit(5)
+        match_reason = "address_area"
+    else:
+        dup_q = None
+        match_reason = None
+    if dup_q is not None:
+        for d in (await db.execute(dup_q)).scalars().all():
+            duplicates.append({
+                "id": str(d.id),
+                "address": d.address,
+                "status": d.status.value if hasattr(d.status, "value") else d.status,
+                "created_at": d.created_at.isoformat() if d.created_at else None,
+                "has_word": bool(d.word_path),
+                "next_step": _report_next_step(d.status, bool(d.word_path or d.pdf_full_path)),
+            })
+
+    return {
+        "report_id": str(report.id),
+        "status": "ocr_confirmed",
+        "ocr_data": ocr_data,
+        # Non-empty → frontend shows "такий звіт уже є" with Продовжити/Новий.
+        "duplicate_of": duplicates,
+        "duplicate_match": match_reason if duplicates else None,
+    }
 
 
 def _analog_locality(item) -> str:
@@ -1924,6 +1989,29 @@ async def download_file(
     return FileResponse(path, media_type=media_types.get(format, "application/octet-stream"), filename=os.path.basename(path))
 
 
+def _report_next_step(status, ready: bool) -> str:
+    """Where the 'Продовжити' button should take an unfinished report.
+
+    Everything the client entered (uploaded documents, OCR data, address,
+    analogs, selection, captured screenshots) is already persisted in the DB /
+    on disk, so re-opening at the right stage loses nothing — and re-running
+    generation reuses existing screenshots, so the provider quota is not spent
+    again. Shared by GET /my and GET /{report_id}.
+    """
+    s = status.value if hasattr(status, "value") else str(status)
+    if ready or s == "ready":
+        return "download"              # готово — просто завантажити
+    return {
+        "uploading": "upload",             # дозавантажити документи
+        "ocr_processing": "confirm_data",  # підтвердити розпізнані дані
+        "ocr_failed": "confirm_data",      # ввести дані вручну
+        "analogs_search": "select_analogs",  # обрати аналоги (вже знайдені)
+        "calculating": "select_value",     # обрати вартість
+        "generating": "generate",          # продовжити генерацію (reuse скрінів)
+        "error": "generate",               # повторити
+    }.get(s, "confirm_data")
+
+
 @reports_router.get("/my")
 async def my_reports(
     user: User = Depends(get_current_user),
@@ -1946,9 +2034,96 @@ async def my_reports(
             "has_word": bool(r.word_path),
             "has_pdf": bool(r.pdf_conclusion_path),
             "has_full": bool(r.pdf_full_path),
+            # True while the report is not finished — the frontend shows
+            # "Продовжити створення звіту" instead of a download button.
+            "is_resumable": (r.status.value if hasattr(r.status, "value") else r.status) != "ready",
+            "next_step": _report_next_step(r.status, bool(r.word_path or r.pdf_full_path)),
         }
         for r in reports
     ]
+
+
+@reports_router.get("/{report_id}")
+async def get_report(
+    report_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Full current state of one report, for resuming an unfinished one.
+
+    Returns everything the frontend needs to re-open a report at the stage the
+    client left it — including the analog candidates ALREADY found and their
+    selection — so "Продовжити" never re-runs the paid analog search or
+    re-captures screenshots. Defined after /my so the literal path still wins.
+    """
+    result = await db.execute(
+        select(Report).where(Report.id == report_id, Report.user_id == user.id)
+    )
+    report = result.scalar_one_or_none()
+    if not report:
+        raise HTTPException(404, "Звіт не знайдено")
+
+    analogs_result = await db.execute(
+        select(Analog).where(Analog.report_id == report.id)
+    )
+    candidates = list(analogs_result.scalars().all())
+    selected_sorted = sorted(
+        (c for c in candidates if c.is_selected),
+        key=lambda c: (c.rank if c.rank is not None else 1_000_000),
+    )
+
+    def _enum(v):
+        return v.value if hasattr(v, "value") else v
+
+    status = _enum(report.status)
+    return {
+        "id": str(report.id),
+        "status": status,
+        "is_resumable": status != "ready",
+        "next_step": _report_next_step(report.status, bool(report.word_path or report.pdf_full_path)),
+        "address": report.address,
+        "object_type": _enum(report.object_type),
+        "deal_type": _enum(report.deal_type),
+        "eval_mode": _enum(report.eval_mode),
+        "area_sqm": report.area_sqm,
+        "rooms": report.rooms,
+        "floor": report.floor,
+        "total_floors": report.total_floors,
+        "year_built": report.year_built,
+        "cadastral_number": report.cadastral_number,
+        "estimated_value": report.estimated_value,
+        "range_min": report.range_min,
+        "range_max": report.range_max,
+        "recommended_value": report.recommended_value,
+        "report_options": report.report_options or {},
+        "has_ocr": bool(report.ocr_raw),
+        "created_at": report.created_at.isoformat() if report.created_at else None,
+        "has_word": bool(report.word_path),
+        "has_pdf": bool(report.pdf_conclusion_path),
+        "has_full": bool(report.pdf_full_path),
+        "candidate_count": len(candidates),
+        "selected_count": sum(1 for c in candidates if c.is_selected),
+        # Same shape as find-analogs' preview_analogs, plus resume state, so the
+        # review screen can be rebuilt without a new search.
+        "analogs": [
+            {
+                "id": str(c.id),
+                "source": str(c.source or "").upper(),
+                "url": c.url,
+                "rooms": c.rooms,
+                "area_sqm": c.area_sqm,
+                "floor": c.floor,
+                "price_uah": c.price_uah,
+                "price_per_sqm": c.price_per_sqm,
+                "price_segment": (c.raw_data or {}).get("price_segment"),
+                "city": _analog_locality(c),
+                "is_selected": bool(c.is_selected),
+                "rank": c.rank,
+                "has_screenshot": bool(c.screenshot_path and os.path.exists(c.screenshot_path)),
+            }
+            for c in (selected_sorted + [c for c in candidates if not c.is_selected])
+        ],
+    }
 
 
 class BulkDeleteReportsRequest(BaseModel):
