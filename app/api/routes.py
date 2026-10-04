@@ -1954,6 +1954,27 @@ async def my_reports(
         select(Report).where(Report.user_id == user.id).order_by(Report.created_at.desc()).limit(50)
     )
     reports = result.scalars().all()
+
+    # next_step tells the frontend where the "Продовжити" button should take an
+    # unfinished report. Everything the client entered (uploaded documents, OCR
+    # data, address, analogs, selection, captured screenshots) is already
+    # persisted in the DB / on disk, so re-opening at the right stage loses
+    # nothing — and re-running generation reuses existing screenshots, so the
+    # provider quota is not spent again.
+    def _next_step(status, ready) -> str:
+        s = status.value if hasattr(status, "value") else str(status)
+        if ready or s == "ready":
+            return "download"          # готово — просто завантажити
+        return {
+            "uploading": "upload",             # дозавантажити документи
+            "ocr_processing": "confirm_data",  # підтвердити розпізнані дані
+            "ocr_failed": "confirm_data",      # ввести дані вручну
+            "analogs_search": "select_analogs",  # обрати аналоги
+            "calculating": "select_value",     # обрати вартість
+            "generating": "generate",          # продовжити генерацію (reuse скрінів)
+            "error": "generate",               # повторити
+        }.get(s, "confirm_data")
+
     return [
         {
             "id": str(r.id), "address": r.address,
@@ -1966,6 +1987,10 @@ async def my_reports(
             "has_word": bool(r.word_path),
             "has_pdf": bool(r.pdf_conclusion_path),
             "has_full": bool(r.pdf_full_path),
+            # True while the report is not finished — the frontend shows
+            # "Продовжити створення звіту" instead of a download button.
+            "is_resumable": (r.status.value if hasattr(r.status, "value") else r.status) != "ready",
+            "next_step": _next_step(r.status, bool(r.word_path or r.pdf_full_path)),
         }
         for r in reports
     ]
