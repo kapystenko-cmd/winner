@@ -1622,7 +1622,7 @@ async def generate_full_word_package(report, user, analogs, include_screenshots=
                 # at 17cm wide, which fits under a 22cm height cap, so the image
                 # is shown at full width and reads clearly. The cap still
                 # protects against a pathologically tall capture overflowing.
-                add_image(display_image, "Картка оголошення", width=Cm(17), max_height_cm=22)
+                add_image(display_image, "Картка оголошення", width=Cm(16), max_height_cm=22)
 
         if entries:
             # Only force a fresh page here if something (photos/screenshots)

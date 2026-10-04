@@ -281,9 +281,23 @@ async def search_analogs(
             # a truly empty small-town search just costs a couple of extra
             # seconds. Detailed logging (state_id/city_id/ids/total/attempt)
             # makes the next occurrence diagnosable at a glance.
+            # The ACTUAL "DIM.RIA то є, то нема" cause, confirmed from a real
+            # log: the city resolves fine (city_id=548, state_id=6) but the
+            # /search call itself answers 429 Too Many Requests — and the old
+            # code called response.raise_for_status() here, so that 429
+            # propagated out and the whole DIM.RIA search returned 0. DIM.RIA
+            # rate-limits bursts, so retry /search on BOTH a 429 and an empty
+            # result (the earlier silent-empty transient), with an increasing
+            # back-off, before accepting 0.
             item_ids: list = []
-            for attempt in range(1, 4):
+            for attempt in range(1, 5):
                 response = await client.get(DIMRIA_BASE + "/search", params=params)
+                if response.status_code == 429:
+                    print(f"DIM.RIA search 429 (attempt {attempt}) for city={city}; backing off")
+                    if attempt < 4:
+                        await asyncio.sleep(2.0 * attempt)
+                        continue
+                    response.raise_for_status()
                 response.raise_for_status()
                 payload = _safe_json(response, f"GET /search (try {attempt})") or {}
                 item_ids = list(payload.get("items") or [])[:max_results]
@@ -293,18 +307,32 @@ async def search_analogs(
                 )
                 if item_ids:
                     break
-                if attempt < 3:
+                if attempt < 4:
                     await asyncio.sleep(1.5)
 
-            # Cascade for houses/land: widen to oblast if city gave < 5
+            # Cascade for houses/land: widen to oblast if city gave < 5. Wrapped
+            # so a 429 / error here only skips the widening, never aborts the
+            # city results already collected above.
             if property_type in ("house", "land") and len(item_ids) < 5 and state_id:
                 print(f"DIM.RIA cascade: city gave {len(item_ids)}, widening to oblast (state_id={state_id})")
                 oblast_params = dict(params)
                 oblast_params.pop("city_id", None)
-                oblast_resp = await client.get(DIMRIA_BASE + "/search", params=oblast_params)
-                oblast_resp.raise_for_status()
-                oblast_payload = _safe_json(oblast_resp, "GET /search oblast") or {}
-                oblast_ids = list(oblast_payload.get("items") or [])[:max_results]
+                oblast_ids = []
+                for attempt in range(1, 4):
+                    try:
+                        oblast_resp = await client.get(DIMRIA_BASE + "/search", params=oblast_params)
+                        if oblast_resp.status_code == 429:
+                            if attempt < 3:
+                                await asyncio.sleep(2.0 * attempt)
+                                continue
+                            break
+                        oblast_resp.raise_for_status()
+                        oblast_payload = _safe_json(oblast_resp, "GET /search oblast") or {}
+                        oblast_ids = list(oblast_payload.get("items") or [])[:max_results]
+                        break
+                    except Exception as error:
+                        print(f"DIM.RIA cascade oblast error (attempt {attempt}): {error}")
+                        break
                 print(f"DIM.RIA cascade oblast: {len(oblast_ids)} ids")
                 seen = set(str(i) for i in item_ids)
                 for oid in oblast_ids:
