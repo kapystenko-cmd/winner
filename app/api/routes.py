@@ -924,7 +924,52 @@ async def confirm_ocr_data(
         "conflict_fields": [item.get("field") for item in ocr_data.get("_conflicts", [])],
         "note": ocr_data["_appraiser_confirmation_note"],
     }))
-    return {"report_id": str(report.id), "status": "ocr_confirmed", "ocr_data": ocr_data}
+
+    # Duplicate detection (warn only). If this appraiser already has a report
+    # for the SAME property, surface it so the frontend can say "такий звіт вже
+    # є" and offer Продовжити наявний / Створити новий. Match on the cadastral
+    # number — the reliable unique key; the OCR address is too inconsistent to
+    # match on (same object came out as "м. Борзна" and "Борзна, Ніжинський
+    # район, Чернігівська область"). As a softer fallback, when there is no
+    # cadastral number, match an exact normalized address + the same area. This
+    # never blocks — the appraiser decides; confirm-ocr already succeeded.
+    duplicates = []
+    cad = (report.cadastral_number or "").strip()
+    if cad:
+        dup_q = select(Report).where(
+            Report.user_id == user.id, Report.id != report.id,
+            Report.cadastral_number == cad,
+        ).order_by(Report.created_at.desc()).limit(5)
+        match_reason = "cadastral_number"
+    elif report.address:
+        dup_q = select(Report).where(
+            Report.user_id == user.id, Report.id != report.id,
+            func.lower(func.trim(Report.address)) == report.address.strip().lower(),
+            Report.area_sqm == report.area_sqm,
+        ).order_by(Report.created_at.desc()).limit(5)
+        match_reason = "address_area"
+    else:
+        dup_q = None
+        match_reason = None
+    if dup_q is not None:
+        for d in (await db.execute(dup_q)).scalars().all():
+            duplicates.append({
+                "id": str(d.id),
+                "address": d.address,
+                "status": d.status.value if hasattr(d.status, "value") else d.status,
+                "created_at": d.created_at.isoformat() if d.created_at else None,
+                "has_word": bool(d.word_path),
+                "next_step": _report_next_step(d.status, bool(d.word_path or d.pdf_full_path)),
+            })
+
+    return {
+        "report_id": str(report.id),
+        "status": "ocr_confirmed",
+        "ocr_data": ocr_data,
+        # Non-empty → frontend shows "такий звіт уже є" with Продовжити/Новий.
+        "duplicate_of": duplicates,
+        "duplicate_match": match_reason if duplicates else None,
+    }
 
 
 def _analog_locality(item) -> str:
