@@ -163,16 +163,37 @@ async def _resolve_city(city: str, client: httpx.AsyncClient, region: str | None
     semaphore = asyncio.Semaphore(5)
 
     async def find_in_state(state: dict[str, Any]) -> tuple[int | None, int] | None:
+        # A single failed oblast must NEVER abort the whole city resolution.
+        # Root cause of "DIM.RIA то 9, то 0" for the same subject: when the
+        # address carries no oblast, every oblast's /cities list is scanned, and
+        # DIM.RIA answers 429 to some of those bursts. The old code called
+        # response.raise_for_status() here, so that 429 propagated out of the
+        # as_completed loop and the ENTIRE resolution failed → 0 analogs. With
+        # an oblast in the address only one oblast was checked, so it usually
+        # resolved → 9. Retrying 429 with back-off and swallowing a persistent
+        # failure (return None) makes resolution robust regardless of whether
+        # the OCR address happened to include the oblast.
+        state_id = int(state["stateID"])
         async with semaphore:
-            state_id = int(state["stateID"])
-            response = await client.get(
-                DIMRIA_BASE + f"/cities/{state_id}",
-                params={"api_key": settings.dimria_api_key, "lang_id": 4},
-            )
-            response.raise_for_status()
-            for item in _safe_json(response, f"GET /cities/{state_id}") or []:
-                if wanted == _key(item.get("name")):
-                    return state_id, int(item["cityID"])
+            for attempt in range(3):
+                try:
+                    response = await client.get(
+                        DIMRIA_BASE + f"/cities/{state_id}",
+                        params={"api_key": settings.dimria_api_key, "lang_id": 4},
+                    )
+                    if response.status_code == 429:
+                        await asyncio.sleep(1.0 * (attempt + 1))
+                        continue
+                    response.raise_for_status()
+                    for item in _safe_json(response, f"GET /cities/{state_id}") or []:
+                        if wanted == _key(item.get("name")):
+                            return state_id, int(item["cityID"])
+                    return None
+                except Exception as error:
+                    if attempt >= 2:
+                        print(f"DIM.RIA cities/{state_id} failed after retries: {error}")
+                        return None
+                    await asyncio.sleep(0.8 * (attempt + 1))
         return None
 
     states_to_check = region_states or states
