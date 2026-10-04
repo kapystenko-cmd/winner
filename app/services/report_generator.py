@@ -1616,9 +1616,13 @@ async def generate_full_word_package(report, user, analogs, include_screenshots=
                 # width=17cm matches the usable page width; max_height_cm=18
                 # keeps the portrait screenshot + its heading + link all on
                 # one page (A4 usable height is ~27cm, heading+link take
-                # ~5cm, leaving ~22cm for the image; 18cm gives some margin
-                # so the next item starts on the same page if short).
-                add_image(display_image, "Картка оголошення", width=Cm(17), max_height_cm=18)
+                # ~5cm, leaving ~22cm for the image). Each analog already gets
+                # its own page (page break per analog above), so allow the full
+                # 17cm width: a portrait OLX card (~0.82 aspect) is ~20.7cm tall
+                # at 17cm wide, which fits under a 22cm height cap, so the image
+                # is shown at full width and reads clearly. The cap still
+                # protects against a pathologically tall capture overflowing.
+                add_image(display_image, "Картка оголошення", width=Cm(17), max_height_cm=22)
 
         if entries:
             # Only force a fresh page here if something (photos/screenshots)
