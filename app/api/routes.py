@@ -149,6 +149,21 @@ async def _capture_selected_analog_screenshots(report: Report, analogs: list[Ana
             print(f"Screenshots: analog {candidate.id} has no URL, skipped")
             return False
         path = os.path.join(screenshot_dir, f"analog_{candidate.rank}.png")
+        # Reuse an already-captured screenshot instead of paying for it again.
+        # Generation runs inside the HTTP request, so a dropped tab / crashed
+        # client / retry re-enters this stage — and each capture is a paid
+        # ZenRows call. If this analog's file already exists from an earlier
+        # (interrupted) run, reuse it: the evidence is identical and the user's
+        # provider quota is not spent twice. A tiny/corrupt leftover (<2 KB) is
+        # ignored and re-captured.
+        try:
+            if os.path.exists(path) and os.path.getsize(path) > 2048:
+                candidate.screenshot_path = path
+                candidate.screenshot_verified = True
+                print(f"Screenshots: reusing existing capture for analog rank={candidate.rank}: {path}")
+                return True
+        except OSError:
+            pass
         screenshotter = take_olx_screenshot if str(candidate.source).casefold() == "olx" else take_screenshot
         try:
             ok = await screenshotter(candidate.url, path)
