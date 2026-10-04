@@ -426,51 +426,63 @@ async def take_screenshot(url: str, save_path: str) -> bool:
     from app.services.browser_screenshot_service import take_browser_screenshots
 
     if settings.zenrows_api_key:
-        hide_css = (
-            "var css="
-            "'body { zoom: 0.5 !important; } "
-            "[data-testid=\"cookies-bar\"],[data-testid*=\"cookie\"],"
-            "[class*=\"cookie\"],[class*=\"Cookie\"],[id*=\"cookie\"],"
-            "[class*=\"consent\"],[class*=\"Consent\"],[id*=\"consent\"],"
-            "[class*=\"gdpr\"],[class*=\"Gdpr\"]"
+        # Mirror the WORKING OLX viewport approach. The old DIM.RIA path had
+        # the same three bugs OLX once had: (1) hide_css/zoom was built but
+        # never sent (no js_instructions), so it snapped at full desktop zoom;
+        # (2) it used screenshot_fullpage, which ZenRows does NOT return an
+        # image for; (3) it wrote response.content without an is_image check,
+        # so a non-image 200 was saved as a corrupt .png and still returned
+        # True — the analog then showed with no picture. Now: viewport
+        # screenshot + window + device + zoom via js_instructions + is_image.
+        try:
+            _zoom = float(os.environ.get("DIMRIA_SCREENSHOT_ZOOM", "0.5") or 0.5)
+        except ValueError:
+            _zoom = 0.5
+        _zoom = min(1.0, max(0.3, _zoom))
+        prep_js = (
+            "var css='body{zoom:" + str(_zoom) + " !important;}"
+            "[data-testid=\"cookies-bar\"],[data-testid*=\"cookie\"],[class*=\"cookie\"],"
+            "[class*=\"Cookie\"],[id*=\"cookie\"],[class*=\"consent\"],[class*=\"Consent\"],"
+            "[id*=\"consent\"],[class*=\"gdpr\"],[class*=\"Gdpr\"]"
             "{display:none !important;visibility:hidden !important;height:0 !important;}';"
-            "var s=document.createElement('style');"
-            "s.innerHTML=css;document.head.appendChild(s);"
+            "var s=document.createElement('style');s.innerHTML=css;document.head.appendChild(s);"
         )
-        # screenshot_selector tells ZenRows to crop server-side to a
-        # specific CSS element — the DIM.RIA offer container. Reliable
-        # when ZenRows ignores window_width/device/fullpage for anti-bot
-        # bypass. ".main__content" is DIM.RIA's wrapper around the whole
-        # listing (photo + title + price + specs + description + credit
-        # offer), confirmed by inspecting their HTML. Fallback to
-        # "#descriptionBlock" if that selector is renamed.
-        #
-        # IMPORTANT: screenshot_selector and screenshot_fullpage are
-        # MUTUALLY EXCLUSIVE per ZenRows API (returns HTTP 400 REQS004).
-        # When a selector is set, do NOT also pass fullpage. When no
-        # selector is set, use fullpage and let smart_crop_listing trim.
-        selector_dim = os.environ.get(
-            "DIMRIA_SCREENSHOT_SELECTOR", ""
-        ).strip()
+        selector_dim = os.environ.get("DIMRIA_SCREENSHOT_SELECTOR", "").strip()
+        _dim_params = {
+            "apikey": settings.zenrows_api_key, "url": url,
+            "screenshot": "true",
+            "screenshot_format": "jpeg", "screenshot_quality": 92,
+            "wait": 800, "window_width": 900, "window_height": 1600,
+            "js_render": "true", "device": "desktop",
+            "js_instructions": json.dumps([
+                {"wait": 1200}, {"evaluate": prep_js}, {"wait": 1800},
+            ]),
+        }
+        if selector_dim:
+            # Element-only crop override (mutually exclusive with viewport
+            # screenshot + window sizing per ZenRows REQS004).
+            _dim_params["screenshot_selector"] = selector_dim
+            _dim_params.pop("screenshot", None)
+            _dim_params.pop("window_width", None)
+            _dim_params.pop("window_height", None)
+            print(f"DIM.RIA screenshot: using selector '{selector_dim}'")
         try:
             async with httpx.AsyncClient(timeout=60, headers=_REQUEST_HEADERS) as client:
-                _dim_params = {
-                    "apikey": settings.zenrows_api_key, "url": url,
-                    "screenshot_format": "jpeg",
-                    "screenshot_quality": 92,
-                    "js_render": "true", "wait": 2500,
-                }
-                if selector_dim:
-                    _dim_params["screenshot_selector"] = selector_dim
-                    print(f"DIM.RIA screenshot: using selector '{selector_dim}'")
-                else:
-                    _dim_params["screenshot_fullpage"] = "true"
                 response = await client.get("https://api.zenrows.com/v1/", params=_dim_params)
                 response.raise_for_status()
-                Path(save_path).parent.mkdir(parents=True, exist_ok=True)
-                Path(save_path).write_bytes(response.content)
-                print("DIM.RIA screenshot created through ZenRows: " + url)
-                return True
+                content_type = str(response.headers.get("content-type", "")).casefold()
+                is_image = (
+                    len(response.content) > 1024
+                    and ("image/" in content_type
+                         or response.content.startswith(b"\x89PNG")
+                         or response.content.startswith(b"\xff\xd8"))
+                )
+                if is_image:
+                    Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+                    Path(save_path).write_bytes(response.content)
+                    print("DIM.RIA screenshot created through ZenRows: " + url)
+                    return True
+                print("DIM.RIA screenshot: ZenRows did not return an image for " + url)
         except httpx.HTTPStatusError as error:
             body_snippet = ""
             try:
