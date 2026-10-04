@@ -399,6 +399,19 @@ async def _take_screenshot(url, save_path):
     """
     from app.services.browser_screenshot_service import take_browser_screenshots
 
+    # Local render is OFF by default: it costs an extra (premium) ZenRows HTML
+    # fetch AND ~20 s per analog, then STILL falls back to the ZenRows
+    # screenshot — doubling the quota spend on a path that currently always
+    # fails. OLX hides the listing body until its own JS hydrates (rendered
+    # DOM showed hasDescEl=True but innerText=980, no price), and the HTML it
+    # ships both breaks when its scripts run and stays hidden when they are
+    # stripped, so set_content can't surface the card. Kept behind
+    # OLX_LOCAL_RENDER=1 for further experiments; production goes straight to
+    # the ZenRows screenshot (one call, ~80% good — the zoom lottery is handled
+    # by the smart_crop guards).
+    if os.environ.get("OLX_LOCAL_RENDER", "0") != "1":
+        return await _take_screenshot_zenrows(url, save_path)
+
     # 1) Get the JS-rendered card HTML.
     html = await _fetch_listing_html(url)
 
