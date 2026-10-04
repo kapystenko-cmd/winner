@@ -517,7 +517,24 @@ async def _take_browser_screenshots(
                     }
                 """, timeout=15000)
             except Exception:
-                print("Browser screenshot: OLX listing title/price was not ready: " + url)
+                # Log what the rendered DOM actually contains so a shell /
+                # empty render is obvious (vs a selector/regex mismatch).
+                try:
+                    diag = await page.evaluate("""
+                        () => {
+                            const t = document.body ? document.body.innerText : '';
+                            return {
+                                len: t.length,
+                                hasProdazh: /прода[єе]ться|продаж/i.test(t),
+                                hasPrice: /(?:\\d[\\d\\s]{2,}\\s*(?:грн|₴|\\$)|\\$\\s*\\d)/i.test(t),
+                                hasDescEl: !!document.querySelector('[data-cy=\"ad_description\"]'),
+                                head: t.slice(0, 160).replace(/\\s+/g, ' '),
+                            };
+                        }
+                    """)
+                    print(f"Browser screenshot: OLX title/price not ready: {url} diag={diag}")
+                except Exception:
+                    print("Browser screenshot: OLX listing title/price was not ready: " + url)
                 return False
             try:
                 # A loading spinner in place of the actual gallery photo was

@@ -348,16 +348,30 @@ async def _fetch_listing_html(url):
     """
     if settings.zenrows_api_key:
         try:
-            async with httpx.AsyncClient(timeout=60) as client:
+            async with httpx.AsyncClient(timeout=90) as client:
+                # wait_for the description block: OLX renders the nav + ad shell
+                # first and injects the listing body (price, specs, опис, gallery)
+                # a moment later via a client API call. A plain js_render with a
+                # fixed 2.5s wait returned that SHELL — ~300KB of HTML with no
+                # price text — so the local render's title/price guard tripped
+                # and every OLX analog fell back to the ZenRows screenshot
+                # lottery. wait_for holds until the опис element exists, so the
+                # returned HTML is the fully hydrated card. The markers logged
+                # below make a shell response obvious at a glance next time.
                 r = await client.get("https://api.zenrows.com/v1/", params={
                     "apikey": settings.zenrows_api_key,
                     "url": url,
                     "js_render": "true",
-                    "wait": 2500,
+                    "wait_for": "[data-cy=ad_description]",
+                    "wait": 3500,
                 })
                 r.raise_for_status()
-                if r.text and len(r.text) > 2000:
-                    return r.text
+                text = r.text or ""
+                has_price = bool(re.search(r"\d[\d\s]{2,}\s*(?:грн|₴|\$)", text))
+                has_desc = "ad_description" in text
+                print(f"OLX listing HTML: len={len(text)}, price={has_price}, desc={has_desc}: {url}")
+                if len(text) > 2000:
+                    return text
         except Exception as e:
             print(f"OLX listing HTML fetch (ZenRows) error: {type(e).__name__}: {e}")
     try:
