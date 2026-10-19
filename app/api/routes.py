@@ -534,7 +534,7 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
 @auth_router.get("/me")
 async def me(user: User = Depends(get_current_user)):
     plan_value = user.plan.value if hasattr(user.plan, "value") else str(user.plan or "free")
-    plan_limits = {"free": 3, "basic": 10, "standard": 30, "pro": 50, "team": 9999}
+    plan_limits = {"free": 3, "basic": 10, "standard": 30, "pro": 60, "team": 9999}
     plan_limit = plan_limits.get(plan_value, 3)
     is_free = plan_value == SubscriptionPlan.FREE.value
     active_until = user.subscription_active_until
@@ -692,7 +692,7 @@ async def create_report(
     """Створити новий звіт (без файлів поки що)"""
     # New evaluators receive exactly three completed draft generations.
     # The service account administrator is the only unlimited exception.
-    plan_limits = {"free": 3, "basic": 10, "standard": 30, "pro": 50, "team": 9999}
+    plan_limits = {"free": 3, "basic": 10, "standard": 30, "pro": 60, "team": 9999}
     plan_value = user.plan.value if hasattr(user.plan, "value") else str(user.plan or "free")
     limit = plan_limits.get(plan_value, 3)
 
@@ -2354,7 +2354,7 @@ async def admin_dashboard(admin: User = Depends(get_admin_user), db: AsyncSessio
 # Kept as a module constant so the admin panel and the enforcement path cannot
 # drift apart silently: if one is edited and the other is not, the panel would
 # show a limit the server does not apply.
-ADMIN_PLAN_LIMITS = {"free": 3, "basic": 10, "standard": 30, "pro": 50, "team": 9999}
+ADMIN_PLAN_LIMITS = {"free": 3, "basic": 10, "standard": 30, "pro": 60, "team": 9999}
 
 
 @admin_router.get("/users")
