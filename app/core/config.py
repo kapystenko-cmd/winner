@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     # Payments
     lemonsqueezy_api_key: str = ""
     lemonsqueezy_webhook_secret: str = ""
+
+    # WayForPay (підписки)
+    wayforpay_merchant: str = "ocinka_pro"
+    wayforpay_domain: str = "ocinka.pro"
+    wayforpay_secret_key: str = ""
+    site_url: str = "https://ocinka.pro"
     
     # Storage
     upload_dir: str = "/var/lib/ocinka/uploads"
