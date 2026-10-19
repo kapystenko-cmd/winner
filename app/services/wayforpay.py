@@ -168,18 +168,46 @@ def parse_callback(raw: bytes) -> dict:
     return {}
 
 
+def _amount_variants(amount):
+    """Можливі текстові подання суми, бо WayForPay у колбеку може форматувати
+    число інакше, ніж ми відправляли (990 / 990.0 / "990.00"). Підпис лишається
+    захищеним — ми лише пробуємо кілька форматів суми, секрет усе одно потрібен."""
+    variants = [amount]
+    try:
+        f = float(amount)
+        variants.append(f)                               # 990.0
+        if f == int(f):
+            variants.append(int(f))                      # 990
+        variants.append(f"{f:.2f}")                      # "990.00"
+        variants.append(("%f" % f).rstrip("0").rstrip(".") or "0")  # 990 / 990.5
+    except (TypeError, ValueError):
+        pass
+    seen, out = set(), []
+    for v in variants:
+        s = "" if v is None else str(v)
+        if s not in seen:
+            seen.add(s)
+            out.append(v)
+    return out
+
+
 def verify_callback(data: dict) -> bool:
-    expected = _sign([
+    recv = str(data.get("merchantSignature", ""))
+    base = [
         data.get("merchantAccount"),
         data.get("orderReference"),
-        data.get("amount"),
+        None,  # amount — підставляємо нижче
         data.get("currency"),
         data.get("authCode"),
         data.get("cardPan"),
         data.get("transactionStatus"),
         data.get("reasonCode"),
-    ])
-    return hmac.compare_digest(expected, str(data.get("merchantSignature", "")))
+    ]
+    for amt in _amount_variants(data.get("amount")):
+        base[2] = amt
+        if hmac.compare_digest(_sign(base), recv):
+            return True
+    return False
 
 
 def callback_response(order_reference: str) -> dict:
