@@ -6,6 +6,9 @@ from fastapi.staticfiles import StaticFiles
 from app.core.config import settings
 from app.core.database import init_db
 from app.api.routes import auth_router, reports_router, admin_router, partners_router
+from app.api.payments import payments_router
+# Імпорт моделей платежів, щоб init_db() створив їх таблиці на старті
+from app.models import billing as _billing  # noqa: F401
 
 BUILD_ID = "2026-07-19-full-pdf-readable-screens-1"
 
@@ -38,6 +41,7 @@ app.include_router(auth_router)
 app.include_router(reports_router)
 app.include_router(admin_router)
 app.include_router(partners_router)
+app.include_router(payments_router)
 
 
 @app.get("/api/health")
