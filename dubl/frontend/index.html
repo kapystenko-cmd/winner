@@ -241,31 +241,49 @@
       }
     }
 
-    function setSlot(idx, file) {
+    function renderSlot(idx, file) {
       var slot = slotEls[idx];
       var img = slot.querySelector('.slot-img');
       var empty = slot.querySelector('.slot-empty');
       var removeBtn = slot.querySelector('.slot-remove');
+      slot.classList.add('filled');
+      empty.hidden = true;
+      removeBtn.hidden = false;
       var reader = new FileReader();
-      reader.onload = function (e) {
-        img.src = e.target.result;
-        img.hidden = false;
-        empty.hidden = true;
-        removeBtn.hidden = false;
-        slot.classList.add('filled');
-        files[idx] = file;
-        refreshButton();
-        updateVisibility();
-      };
+      reader.onload = function (e) { img.src = e.target.result; img.hidden = false; };
       reader.readAsDataURL(file);
     }
+
+    // Кладе один або кілька файлів у вільні слоти. Слоти резервуються
+    // СИНХРОННО (files[target] = ...), щоб кілька файлів з одного вибору не
+    // потрапили в один і той самий слот через асинхронний FileReader.
+    function placeFiles(fileList, preferIdx) {
+      var arr = Array.prototype.slice.call(fileList || []).filter(function (f) {
+        return f && f.type && f.type.indexOf('image/') === 0;
+      });
+      for (var k = 0; k < arr.length; k++) {
+        var target;
+        if (k === 0 && preferIdx !== undefined && preferIdx !== null && !files[preferIdx]) {
+          target = preferIdx;
+        } else {
+          target = files.indexOf(null);
+        }
+        if (target === -1) break; // усі 10 слотів зайняті
+        files[target] = arr[k];
+        renderSlot(target, arr[k]);
+      }
+      refreshButton();
+      updateVisibility();
+    }
+
+    function setSlot(idx, file) { placeFiles([file], idx); }
 
     function buildSlots() {
       for (var i = 0; i < SLOT_COUNT; i++) {
         var slot = document.createElement('label');
         slot.className = 'slot';
         slot.innerHTML =
-          '<input type="file" accept="image/*" hidden>' +
+          '<input type="file" accept="image/*" multiple hidden>' +
           '<span class="slot-empty"><span class="slot-num">' + (i + 1) + '</span><span class="slot-plus">додати</span></span>' +
           '<img class="slot-img" alt="" hidden>' +
           '<button type="button" class="slot-remove" hidden aria-label="Прибрати">×</button>';
@@ -275,8 +293,8 @@
           var input = slotEl.querySelector('input');
           var removeBtn = slotEl.querySelector('.slot-remove');
           input.addEventListener('change', function () {
-            var f = input.files && input.files[0];
-            if (f) setSlot(idx, f);
+            if (input.files && input.files.length) placeFiles(input.files, idx);
+            input.value = '';
           });
           removeBtn.addEventListener('click', function (ev) {
             ev.preventDefault();
@@ -319,7 +337,7 @@
       }
       if (!file) return;
       var idx = files.indexOf(null);
-      if (idx === -1) return; // усі 3 слоти зайняті
+      if (idx === -1) return; // усі слоти зайняті
       setSlot(idx, file);
       e._dublHandled = true;
       e.preventDefault();

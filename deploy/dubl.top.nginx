@@ -16,6 +16,9 @@ server {
 
     location / {
         try_files $uri $uri/ =404;
+        # Сторінка маленька і часто оновлюється — не кешуємо, щоб зміни
+        # підхоплювались одразу без ручного скидання кешу.
+        add_header Cache-Control "no-store, must-revalidate";
     }
 
     listen 443 ssl; # managed by Certbot
