@@ -125,11 +125,12 @@ async def vip_search(files: list[UploadFile] = File(...)) -> dict:
         print(f"dubl vip extract error: {error}", flush=True)
         raise HTTPException(status_code=502, detail="Не вдалося проаналізувати скриншот")
 
-    from dubl.portals import search_dimria
-    candidates = await search_dimria(subject)
+    from dubl.portals import search_dimria, search_olx
+    dimria, olx = await asyncio.gather(search_dimria(subject), search_olx(subject))
+    candidates = dimria + olx
     return {
         "subject": subject,
         "count": len(candidates),
         "candidates": candidates,
-        "note": "DOM.RIA за даними. OLX / rieltor.ua і підтвердження по фото — наступні етапи.",
+        "note": "DOM.RIA + OLX за даними. rieltor.ua і підтвердження по фото — наступні етапи.",
     }

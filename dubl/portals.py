@@ -171,3 +171,63 @@ async def search_dimria(subject: dict, limit: int = 40) -> list[dict]:
         low, high = area * (1 - tol), area * (1 + tol)
         out = [x for x in out if not x.get("area_sqm") or low <= x["area_sqm"] <= high]
     return out
+
+
+# ---------------------------------------------------------------- OLX
+def _ensure_ocinka_env() -> None:
+    """Прокинути ключі dubl у os.environ, щоб app.core.config (ocinka) їх побачив.
+    Робимо ДО першого імпорту app.core.config (він створює Settings() на імпорті).
+    """
+    import os
+    for name, value in {
+        "ZENROWS_API_KEY": settings.zenrows_api_key,
+        "GEMINI_API_KEY": settings.gemini_api_key,
+        "GEMINI_MODEL": settings.gemini_model,
+    }.items():
+        if value and not os.environ.get(name):
+            os.environ[name] = value
+
+
+async def search_olx(subject: dict, limit: int = 60) -> list[dict]:
+    """Кандидати з OLX через ZenRows — переиспользуємо перевірений olx_service ocinka."""
+    if not settings.zenrows_api_key:
+        return []
+    city = subject.get("city")
+    otype = str(subject.get("object_type") or "apartment")
+    if not city:
+        return []
+    _ensure_ocinka_env()
+    try:
+        from app.services.olx_service import find_olx_analogs
+    except Exception as error:
+        print(f"dubl vip olx import error: {type(error).__name__}: {error}", flush=True)
+        return []
+    try:
+        results = await find_olx_analogs(
+            city, otype, subject.get("rooms"), subject.get("area_sqm"),
+            report_id="", max_pages=3, max_candidates=limit, screenshots=False,
+            district=subject.get("district"), price_min_uah=None, price_max_uah=None,
+            region=subject.get("region"),
+        )
+    except Exception as error:
+        print(f"dubl vip olx error: {type(error).__name__}: {error}", flush=True)
+        return []
+
+    out = []
+    for r in (results or []):
+        out.append({
+            "source": "olx",
+            "url": r.get("url") or r.get("link") or "",
+            "title": r.get("title") or "",
+            "price_uah": r.get("price_uah") or r.get("price"),
+            "area_sqm": r.get("area_sqm") or r.get("area"),
+            "rooms": r.get("rooms"),
+            "floor": r.get("floor"),
+            "address": r.get("address") or "",
+        })
+    area = subject.get("area_sqm")
+    if area:
+        tol = settings.area_tolerance
+        low, high = area * (1 - tol), area * (1 + tol)
+        out = [x for x in out if not x.get("area_sqm") or low <= float(x["area_sqm"]) <= high]
+    return out
