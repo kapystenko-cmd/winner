@@ -187,7 +187,7 @@
 
   <section class="card" aria-label="Завантаження скриншотів">
     <div class="card-title">Завантажте 1–3 скриншоти об'єкта</div>
-    <p class="hint">На скриншотах має бути вся інформація про об'єкт: щонайменше 3 фото, адреса (або хоча б місто), площа, поверх, кількість кімнат тощо. Продаж або оренда, квартири та будинки — тип визначаємо автоматично.</p>
+    <p class="hint">На скриншотах має бути вся інформація про об'єкт: щонайменше 3 фото, адреса (або хоча б місто), площа, поверх, кількість кімнат тощо. Продаж або оренда, квартири та будинки — тип визначаємо автоматично. Можна натиснути <b>Ctrl+V</b>, щоб вставити скриншот із буфера (після PrintScreen).</p>
 
     <div class="slots" id="slots">
       <label class="slot" data-i="1">
@@ -243,6 +243,24 @@
       startBtn.disabled = !files.some(function (f) { return !!f; });
     }
 
+    function setSlot(idx, file) {
+      var slot = slotEls[idx];
+      var img = slot.querySelector('.slot-img');
+      var empty = slot.querySelector('.slot-empty');
+      var removeBtn = slot.querySelector('.slot-remove');
+      var reader = new FileReader();
+      reader.onload = function (e) {
+        img.src = e.target.result;
+        img.hidden = false;
+        empty.hidden = true;
+        removeBtn.hidden = false;
+        slot.classList.add('filled');
+        files[idx] = file;
+        refreshButton();
+      };
+      reader.readAsDataURL(file);
+    }
+
     slotEls.forEach(function (slot, idx) {
       var input = slot.querySelector('input');
       var img = slot.querySelector('.slot-img');
@@ -251,18 +269,7 @@
 
       input.addEventListener('change', function () {
         var f = input.files && input.files[0];
-        if (!f) return;
-        var reader = new FileReader();
-        reader.onload = function (e) {
-          img.src = e.target.result;
-          img.hidden = false;
-          empty.hidden = true;
-          removeBtn.hidden = false;
-          slot.classList.add('filled');
-          files[idx] = f;
-          refreshButton();
-        };
-        reader.readAsDataURL(f);
+        if (f) setSlot(idx, f);
       });
 
       removeBtn.addEventListener('click', function (ev) {
@@ -277,6 +284,22 @@
         files[idx] = null;
         refreshButton();
       });
+    });
+
+    // Вставка скриншота з буфера обміну (Ctrl+V після PrintScreen).
+    document.addEventListener('paste', function (e) {
+      var items = (e.clipboardData && e.clipboardData.items) || [];
+      for (var i = 0; i < items.length; i++) {
+        if (items[i].type && items[i].type.indexOf('image/') === 0) {
+          var file = items[i].getAsFile();
+          if (!file) continue;
+          var idx = files.indexOf(null);
+          if (idx === -1) return; // усі 3 слоти зайняті
+          setSlot(idx, file);
+          e.preventDefault();
+          return;
+        }
+      }
     });
 
     var TYPE_LABELS = { apartment: 'Квартира', house: 'Будинок', land: 'Ділянка', commercial: 'Комерція' };
