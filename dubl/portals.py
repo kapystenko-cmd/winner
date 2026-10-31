@@ -173,6 +173,42 @@ async def search_dimria(subject: dict, limit: int = 40) -> list[dict]:
     return out
 
 
+def _as_int(value) -> int | None:
+    try:
+        return int(float(value)) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
+def apply_filters(subject: dict, candidates: list[dict]) -> list[dict]:
+    """Строгий відбір кандидатів: кімнати і поверх збігаються ТОЧНО; площа ±10%.
+    (Фінальне підтвердження — по фото, окремий етап.)"""
+    sr = _as_int(subject.get("rooms"))
+    sf = _as_int(subject.get("floor"))
+    try:
+        area = float(subject.get("area_sqm")) if subject.get("area_sqm") not in (None, "") else None
+    except (TypeError, ValueError):
+        area = None
+    tol = settings.area_tolerance
+    out = []
+    for c in candidates:
+        cr = _as_int(c.get("rooms"))
+        if sr and cr and cr != sr:
+            continue
+        cf = _as_int(c.get("floor"))
+        if sf and cf and cf != sf:          # поверх строго, якщо відомий в обох
+            continue
+        if area and c.get("area_sqm"):
+            try:
+                a = float(c["area_sqm"])
+                if not (area * (1 - tol) <= a <= area * (1 + tol)):
+                    continue
+            except (TypeError, ValueError):
+                pass
+        out.append(c)
+    return out
+
+
 # ---------------------------------------------------------------- OLX
 def _ensure_ocinka_env() -> None:
     """Прокинути ключі dubl у os.environ, щоб app.core.config (ocinka) їх побачив.

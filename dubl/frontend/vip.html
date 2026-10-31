@@ -144,7 +144,7 @@
   <section class="results" id="results" hidden>
     <div class="card-title">Параметри об'єкта</div>
     <div class="params" id="params"></div>
-    <div class="card-title" style="margin-top:22px">Знайдено на порталах</div>
+    <div class="card-title" style="margin-top:22px">Знайдено на порталах <span id="objprice" style="font-weight:400;color:var(--muted);font-size:0.9rem"></span></div>
     <div class="tbl-wrap">
       <table>
         <thead><tr><th>Майданчик</th><th>Ціна</th><th>Площа</th><th>Кімнат</th><th>Поверх</th><th></th></tr></thead>
@@ -303,6 +303,9 @@
           if (!res.ok) throw new Error((res.data && res.data.detail) ? res.data.detail : 'Помилка пошуку');
           status.textContent = 'Готово — знайдено ' + res.data.count;
           renderParams(res.data.subject);
+          var s = res.data.subject || {};
+          var op = num(s.price_value) ? (s.price_value + (s.price_currency === 'USD' ? ' $' : (s.price_currency ? ' ' + s.price_currency : ''))) : '';
+          document.getElementById('objprice').textContent = op ? '· ціна об’єкта: ' + op : '';
           renderCandidates(res.data.candidates);
           document.getElementById('resnote').textContent = res.data.note || '';
           setTimeout(function () {
