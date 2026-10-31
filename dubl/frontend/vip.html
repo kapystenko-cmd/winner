@@ -263,7 +263,7 @@
 
     function photoBadge(p) {
       p = p || {};
-      if (p.match === 'yes') return '<span style="color:var(--good);font-weight:700">дубль ✓ ' + Math.round((p.confidence || 0) * 100) + '%</span>';
+      if (p.match === 'yes') return '<span style="color:var(--good);font-weight:700">той самий ✓ ' + Math.round((p.confidence || 0) * 100) + '%</span>';
       if (p.match === 'no') return '<span style="color:var(--muted)">не той об’єкт</span>';
       if (p.match === 'no_photos') return '<span style="color:var(--muted)">нема фото</span>';
       return '<span style="color:var(--muted)">—</span>';
