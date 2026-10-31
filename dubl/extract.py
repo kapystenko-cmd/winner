@@ -101,5 +101,6 @@ async def extract_subject(images: list[tuple[bytes, str]]) -> dict:
         timeout=settings.gemini_timeout_seconds + 10,
     )
     subject = _parse_model_json(response.text)
-    subject["_provider"] = "gemini"
+    # Не додаємо жодних позначок провайдера/ІІ у відповідь — користувач їх не бачить.
+    subject.pop("_provider", None)
     return subject
