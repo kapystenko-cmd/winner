@@ -122,7 +122,8 @@ async def _detail(item_id, client: httpx.AsyncClient) -> dict | None:
 
 async def search_dimria(subject: dict, limit: int = 40) -> list[dict]:
     """Кандидати з DOM.RIA за даними: місто, тип, кімнати строго, площа ±10%."""
-    if not settings.dimria_api_key or not settings.dimria_enabled:
+    if (not settings.dimria_api_key or not settings.dimria_enabled
+            or settings.dimria_api_key == "your-dimria-api-key"):
         return []
     city = subject.get("city")
     otype = str(subject.get("object_type") or "apartment")

@@ -111,6 +111,25 @@ async def _overpass(query: str, timeout: int = 60) -> dict:
 
 
 # ---------------------------------------------------------------- Serper
+async def serper_search(query: str, num: int = 20, page: int = 1) -> list[dict]:
+    """Один веб-пошук через Serper.dev → список organic-результатів."""
+    key = settings.serper_api_key
+    if not key:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.post(
+                SERPER_URL,
+                headers={"X-API-KEY": key, "Content-Type": "application/json"},
+                json={"q": query, "gl": "ua", "hl": "uk", "num": num, "page": page},
+            )
+            resp.raise_for_status()
+            return resp.json().get("organic") or []
+    except Exception as error:
+        print(f"dubl serper_search error ({query}): {error}", flush=True)
+        return []
+
+
 async def find_agencies_serper(city: str) -> list[dict]:
     key = settings.serper_api_key
     if not key:
