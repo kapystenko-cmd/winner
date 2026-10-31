@@ -287,6 +287,10 @@ import re as _re
 _OG_IMG_RE = _re.compile(r'<meta[^>]+(?:property|name)=["\']og:image["\'][^>]+content=["\']([^"\']+)', _re.I)
 _OLX_IMG_RE = _re.compile(r'https://[a-z0-9.\-]*ol(?:x)?cdn\.com/[^\s"\'\\<>]+?\.(?:jpe?g|png|webp)', _re.I)
 _RIA_IMG_RE = _re.compile(r'https://cdn[0-9]*\.riastatic\.com/[^\s"\'\\<>]+?\.(?:jpe?g|png|webp)', _re.I)
+# Універсальний пошук фото (будь-який CDN) + відсів логотипів/іконок.
+_IMG_ANY_RE = _re.compile(r'https?://[^\s"\'<>()]+?\.(?:jpe?g|png|webp)(?:\?[^\s"\'<>()]*)?', _re.I)
+_IMG_SKIP = ("logo", "icon", "sprite", "avatar", "placeholder", "favicon",
+             "no-image", "noimage", "blank", "/svg", "emoji", "flag")
 
 _PHOTO_PROMPT = (
     "Порівняй ДВА набори фото. ПЕРШИЙ — фото об'єкта зі скриншотів оголошення користувача. "
@@ -307,7 +311,8 @@ async def _fetch_html(url: str) -> str:
         try:
             async with httpx.AsyncClient(timeout=45) as client:
                 r = await client.get("https://api.zenrows.com/v1/", params={
-                    "apikey": settings.zenrows_api_key, "url": url, "js_render": "true",
+                    "apikey": settings.zenrows_api_key, "url": url,
+                    "js_render": "true", "wait": 3000,
                 })
                 r.raise_for_status()
                 return r.text
@@ -331,10 +336,12 @@ async def fetch_listing_photos(url: str, limit: int = 5) -> list[str]:
     m = _OG_IMG_RE.search(html)
     if m:
         urls.append(m.group(1))
-    for rx in (_OLX_IMG_RE, _RIA_IMG_RE):
-        for u in rx.findall(html):
-            if u not in urls:
-                urls.append(u)
+    for u in _IMG_ANY_RE.findall(html):
+        low = u.lower()
+        if any(s in low for s in _IMG_SKIP):
+            continue
+        if u not in urls:
+            urls.append(u)
     return urls[:limit]
 
 
@@ -418,10 +425,17 @@ async def search_extra_portals(subject: dict) -> list[dict]:
     rooms = subject.get("rooms")
     deal = "оренда" if str(subject.get("deal_type")) == "rent" else "продаж"
     rooms_part = f"{rooms}-кімнатна" if rooms else ""
+    loc = street or district  # вулиця — найточніше; якщо немає — район
+    area_part = ""
+    try:
+        if subject.get("area_sqm"):
+            area_part = f"{round(float(subject['area_sqm']))} м²"
+    except (TypeError, ValueError):
+        pass
 
     queries = [
-        " ".join(p for p in [deal, rooms_part, "квартира", city, street] if p),
-        " ".join(p for p in [deal, rooms_part, "квартира", city, district] if p),
+        " ".join(p for p in [deal, rooms_part, "квартира", city, loc, area_part] if p),
+        " ".join(p for p in [deal, rooms_part, "квартира", city, loc] if p),
     ]
     out: dict[str, dict] = {}
     seen_q: set[str] = set()
@@ -441,4 +455,4 @@ async def search_extra_portals(subject: dict) -> list[dict]:
                 "url": url, "title": item.get("title") or "",
                 "price_uah": None, "area_sqm": None, "rooms": None, "floor": None,
             }
-    return list(out.values())
+    return list(out.values())[:20]
