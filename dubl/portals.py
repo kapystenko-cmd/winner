@@ -289,9 +289,15 @@ _OLX_IMG_RE = _re.compile(r'https://[a-z0-9.\-]*ol(?:x)?cdn\.com/[^\s"\'\\<>]+?\
 _RIA_IMG_RE = _re.compile(r'https://cdn[0-9]*\.riastatic\.com/[^\s"\'\\<>]+?\.(?:jpe?g|png|webp)', _re.I)
 
 _PHOTO_PROMPT = (
-    "Тобі дано ФОТО ОБ'ЄКТА (зі скриншотів оголошення користувача) і ФОТО КАНДИДАТА (інше оголошення).\n"
-    "Визнач, чи це ТА САМА квартира/будинок (ті самі кімнати, планування, ремонт, вид з вікна, деталі), "
-    "навіть якщо фото обрізані, дзеркальні, з водяним знаком/логотипом, іншим освітленням чи порядком.\n"
+    "Порівняй ДВА набори фото. ПЕРШИЙ — фото об'єкта зі скриншотів оголошення користувача. "
+    "ДРУГИЙ — фото іншого оголошення (кандидата).\n"
+    "УВАГА: більшість квартир РІЗНІ, навіть якщо схожий ремонт, планування, меблі чи тип квартири. "
+    "Схожість — це НЕ той самий об'єкт.\n"
+    "Відповідай same_object=true ТІЛЬКИ якщо це ФІЗИЧНО ТА САМА квартира: видно ті самі КОНКРЕТНІ фото "
+    "(нехай обрізані, дзеркальні, з водяним знаком, іншим кадруванням) АБО однозначно ті самі приміщення "
+    "з унікальними деталями, що збігаються (та сама плитка/підлога, той самий вид з вікна, ті самі меблі на тих самих місцях, "
+    "ті самі дефекти чи особливості).\n"
+    "Потрібно щонайменше 2 фото, що однозначно збігаються. Якщо є хоч сумнів — same_object=false.\n"
     "Поверни ТІЛЬКИ JSON: {\"same_object\": true/false, \"matched_photos\": <ціле>, \"confidence\": <0..1>}."
 )
 
@@ -377,11 +383,14 @@ async def confirm_by_photo(object_images: list[tuple[bytes, str]], candidate: di
         )
         from dubl.extract import _parse_model_json
         data = _parse_model_json(resp.text)
-        same = bool(data.get("same_object"))
+        matched = int(data.get("matched_photos") or 0)
+        conf = float(data.get("confidence") or 0)
+        # Строго: дубль лише якщо Gemini каже "так" + ≥2 збіги фото + висока впевненість.
+        same = bool(data.get("same_object")) and matched >= 2 and conf >= 0.7
         return {
             "match": "yes" if same else "no",
-            "confidence": float(data.get("confidence") or 0),
-            "matched": int(data.get("matched_photos") or 0),
+            "confidence": conf,
+            "matched": matched,
         }
     except Exception as error:
         print(f"dubl vip photo compare error: {type(error).__name__}: {error}", flush=True)
@@ -406,12 +415,7 @@ async def search_extra_portals(subject: dict, per_portal: int = 3) -> list[dict]
     async def one(portal: str) -> list[dict]:
         parts = ["site:" + portal, deal, city, district]
         if rooms:
-            parts.append(f"{rooms}-кімнатна")
-        if area:
-            try:
-                parts.append(f"{round(float(area))} м²")
-            except (TypeError, ValueError):
-                pass
+            parts.append(f"{rooms} кімнатна")
         query = " ".join(p for p in parts if p)
         organic = await serper_search(query, num=20)
         out = []

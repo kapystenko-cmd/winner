@@ -116,15 +116,28 @@ async def serper_search(query: str, num: int = 20, page: int = 1) -> list[dict]:
     key = settings.serper_api_key
     if not key:
         return []
+    body: dict = {"q": query, "gl": "ua", "hl": "uk"}
+    if num and num != 10:
+        body["num"] = num
+    if page and page > 1:
+        body["page"] = page
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.post(
                 SERPER_URL,
                 headers={"X-API-KEY": key, "Content-Type": "application/json"},
-                json={"q": query, "gl": "ua", "hl": "uk", "num": num, "page": page},
+                json=body,
             )
             resp.raise_for_status()
             return resp.json().get("organic") or []
+    except httpx.HTTPStatusError as error:
+        snippet = ""
+        try:
+            snippet = error.response.text[:200]
+        except Exception:
+            pass
+        print(f"dubl serper_search {error.response.status_code} ({query}): {snippet}", flush=True)
+        return []
     except Exception as error:
         print(f"dubl serper_search error ({query}): {error}", flush=True)
         return []
