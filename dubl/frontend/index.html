@@ -23,6 +23,8 @@
     --good-bg: #e7f6ec;
     --warn: #9a6b00;
     --warn-bg: #f7efdc;
+    --crit: #b3261e;
+    --crit-bg: #fbeceb;
     --radius: 18px;
     --radius-sm: 12px;
     color-scheme: light;
@@ -70,7 +72,7 @@
     text-wrap: balance;
   }
 
-  /* Upload */
+  /* Card */
   .card {
     margin-top: 34px;
     background: var(--panel);
@@ -145,45 +147,18 @@
 
   /* Results */
   .results { margin-top: 30px; }
-  .demo-badge {
-    display: inline-block; font-size: 0.74rem; font-weight: 700; letter-spacing: 0.06em;
-    text-transform: uppercase; color: var(--muted);
-    border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px;
-  }
-  .summary {
-    margin-top: 14px; display: flex; flex-wrap: wrap; gap: 10px 26px; align-items: baseline;
-    padding: 16px 18px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm);
-  }
-  .summary .big { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
-  .summary .lbl { font-size: 0.85rem; color: var(--muted); }
-
-  .tbl-wrap { margin-top: 16px; overflow-x: auto; }
-  table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
-  thead th {
-    text-align: left; font-weight: 600; font-size: 0.78rem; letter-spacing: 0.04em; text-transform: uppercase;
-    color: var(--muted); padding: 0 14px 10px; border-bottom: 1px solid var(--line); white-space: nowrap;
-  }
-  tbody td { padding: 14px; border-bottom: 1px solid var(--line); vertical-align: middle; }
-  td.price { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .pill { display: inline-block; font-size: 0.8rem; font-weight: 600; padding: 3px 10px; border-radius: 999px; white-space: nowrap; }
+  .params { margin-top: 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+  .param { padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm); min-width: 0; }
+  .param .k { font-size: 0.78rem; color: var(--muted); }
+  .param .v { font-size: 1.05rem; font-weight: 600; margin-top: 2px; word-break: break-word; }
+  .pill { display: inline-block; font-size: 0.85rem; font-weight: 600; padding: 2px 10px; border-radius: 999px; }
   .pill.owner { color: var(--good); background: var(--good-bg); }
-  .pill.biz { color: var(--muted); background: var(--panel); border: 1px solid var(--line); }
-  .pill.hi { color: var(--good); background: var(--good-bg); }
-  .pill.mid { color: var(--warn); background: var(--warn-bg); }
-  .link { color: var(--fg); font-weight: 600; text-decoration: none; white-space: nowrap; }
-  .link:hover { text-decoration: underline; }
+  .pill.biz { color: var(--muted); background: var(--bg); border: 1px solid var(--line); }
+  .note { margin-top: 16px; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--muted); background: var(--panel); font-size: 0.92rem; }
+  .err { margin-top: 16px; padding: 14px 16px; border: 1px solid var(--crit); border-radius: var(--radius-sm); color: var(--crit); background: var(--crit-bg); font-size: 0.95rem; }
 
   footer { color: var(--muted); font-size: 0.85rem; text-align: center; padding-block: 40px 30px; }
   footer p { margin: 4px 0; }
-
-  /* Mobile: table becomes cards */
-  @media (max-width: 560px) {
-    thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
-    table, tbody, tr, td { display: block; width: 100%; }
-    tbody tr { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 6px 4px; margin-bottom: 12px; }
-    tbody td { border: none; display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 9px 14px; }
-    tbody td::before { content: attr(data-label); color: var(--muted); font-size: 0.8rem; font-weight: 600; }
-  }
 
   @media (prefers-reduced-motion: reduce) {
     .bar-fill { animation: none; }
@@ -244,26 +219,17 @@
   </section>
 
   <section class="results" id="results" hidden>
-    <span class="demo-badge">Приклад результату</span>
-    <div class="summary">
-      <span><span class="big" id="sumRange">$48 500 – $53 000</span><br><span class="lbl">діапазон цін об'єкта</span></span>
-      <span><span class="big">3</span><br><span class="lbl">оголошення · 2 агентства</span></span>
-      <span><span class="big" style="color:var(--good)">Так</span><br><span class="lbl">є оголошення від власника</span></span>
-    </div>
+    <div class="card-title">Розпізнано з оголошення</div>
+    <div class="params" id="params"></div>
+    <div class="note">Пошук дублів, підтвердження по фото та зріз цін — наступний етап. Нічого не зберігаємо: скриншоти оброблено в пам'яті.</div>
+  </section>
 
-    <div class="tbl-wrap">
-      <table>
-        <thead>
-          <tr><th>Майданчик</th><th>Ціна</th><th>Тип</th><th>Впевненість</th><th></th></tr>
-        </thead>
-        <tbody id="rows"></tbody>
-      </table>
-    </div>
+  <section id="errBox" hidden>
+    <div class="err" id="errText"></div>
   </section>
 
   <footer>
     <p>Мова: українська · інші мови з'являться згодом окремими розділами</p>
-    <p>Дані в таблиці — приклад. Реальний пошук підключається далі.</p>
   </footer>
 </div>
 
@@ -274,8 +240,7 @@
     var slotEls = Array.prototype.slice.call(document.querySelectorAll('.slot'));
 
     function refreshButton() {
-      var any = files.some(function (f) { return !!f; });
-      startBtn.disabled = !any;
+      startBtn.disabled = !files.some(function (f) { return !!f; });
     }
 
     slotEls.forEach(function (slot, idx) {
@@ -314,76 +279,110 @@
       });
     });
 
-    // Demo results (example data, replaced by the real search backend later)
-    var demoRows = [
-      { place: 'Агенція «Домівка»', price: '$52 000', type: 'biz', typeLabel: 'бізнес', conf: 'hi', confLabel: 'висока', url: '#' },
-      { place: 'OLX', price: '$48 500', type: 'owner', typeLabel: 'власник', conf: 'hi', confLabel: 'висока', url: 'https://www.olx.ua' },
-      { place: 'DOM.RIA', price: '$53 000', type: 'biz', typeLabel: 'бізнес', conf: 'mid', confLabel: 'середня', url: 'https://dom.ria.com' }
-    ];
+    var TYPE_LABELS = { apartment: 'Квартира', house: 'Будинок', land: 'Ділянка', commercial: 'Комерція' };
 
-    function renderRows() {
-      var tb = document.getElementById('rows');
-      tb.innerHTML = '';
-      demoRows.forEach(function (r) {
-        var tr = document.createElement('tr');
-        var linkHtml = r.url === '#'
-          ? '<span class="link" style="color:var(--muted)">приклад</span>'
-          : '<a class="link" href="' + r.url + '" target="_blank" rel="noopener">Відкрити →</a>';
-        tr.innerHTML =
-          '<td data-label="Майданчик">' + r.place + '</td>' +
-          '<td data-label="Ціна" class="price">' + r.price + '</td>' +
-          '<td data-label="Тип"><span class="pill ' + r.type + '">' + r.typeLabel + '</span></td>' +
-          '<td data-label="Впевненість"><span class="pill ' + r.conf + '">' + r.confLabel + '</span></td>' +
-          '<td data-label="">' + linkHtml + '</td>';
-        tb.appendChild(tr);
-      });
+    function num(v) { return (v === null || v === undefined || v === '') ? null : v; }
+
+    function buildParams(s) {
+      var rows = [];
+      if (num(s.object_type)) rows.push(['Тип об’єкта', TYPE_LABELS[s.object_type] || s.object_type]);
+      if (num(s.city)) rows.push(['Місто', s.city]);
+      if (num(s.district)) rows.push(['Район', s.district]);
+      var addr = [s.street, s.building].filter(function (x) { return num(x); }).join(', ');
+      if (addr) rows.push(['Адреса', addr]);
+      if (num(s.rooms)) rows.push(['Кімнат', s.rooms]);
+      if (num(s.area_sqm)) rows.push(['Площа', s.area_sqm + ' м²']);
+      if (num(s.floor)) rows.push(['Поверх', s.floor + (num(s.total_floors) ? ' з ' + s.total_floors : '')]);
+      if (num(s.price_value)) rows.push(['Ціна', s.price_value + (num(s.price_currency) ? ' ' + (s.price_currency === 'USD' ? '$' : s.price_currency) : '')]);
+      if (num(s.seller_type)) {
+        var owner = s.seller_type === 'owner';
+        rows.push(['Тип', '<span class="pill ' + (owner ? 'owner' : 'biz') + '">' + (owner ? 'власник' : 'агентство') + '</span>']);
+      }
+      if (num(s.agency_name)) rows.push(['Агентство', s.agency_name]);
+      if (num(s.phone)) rows.push(['Телефон', s.phone]);
+      if (num(s.photos_visible)) rows.push(['Фото на скрині', s.photos_visible]);
+      if (num(s.confidence) !== null) rows.push(['Впевненість', Math.round(Number(s.confidence) * 100) + '%']);
+      return rows;
     }
 
-    var steps = [
-      'Аналізуємо скриншот…',
-      'Визначаємо локацію та параметри…',
-      'Шукаємо агентства на карті та в пошуку…',
-      'Порівнюємо фото об’єкта…',
-      'Формуємо таблицю…'
-    ];
+    function renderParams(subject) {
+      var box = document.getElementById('params');
+      var rows = buildParams(subject || {});
+      if (!rows.length) {
+        box.innerHTML = '<div class="param"><div class="v">Не вдалося зчитати параметри зі скриншота</div></div>';
+        return;
+      }
+      box.innerHTML = rows.map(function (r) {
+        return '<div class="param"><div class="k">' + r[0] + '</div><div class="v">' + r[1] + '</div></div>';
+      }).join('');
+    }
+
+    function showError(msg) {
+      document.getElementById('errText').textContent = msg;
+      document.getElementById('errBox').hidden = false;
+    }
 
     startBtn.addEventListener('click', function () {
       if (startBtn.disabled) return;
+
+      var selected = files.filter(function (f) { return !!f; });
+      if (!selected.length) return;
+
       var progress = document.getElementById('progress');
       var results = document.getElementById('results');
+      var errBox = document.getElementById('errBox');
       var bar = document.getElementById('barfill');
       var status = document.getElementById('status');
 
       results.hidden = true;
+      errBox.hidden = true;
       progress.hidden = false;
       startBtn.disabled = true;
-      startBtn.textContent = 'Шукаємо…';
+      startBtn.textContent = 'Аналізуємо…';
       bar.style.width = '0%';
+      status.textContent = 'Завантажуємо скриншоти…';
       progress.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
+      // Smooth progress up to ~92% while we wait for the API response.
       var pct = 0;
-      var stepIdx = 0;
-      status.textContent = steps[0];
-
-      var timer = setInterval(function () {
-        pct += Math.random() * 11 + 5;
-        if (pct > 100) pct = 100;
+      var waiting = setInterval(function () {
+        pct += Math.random() * 7 + 3;
+        if (pct > 92) pct = 92;
         bar.style.width = pct + '%';
-        var si = Math.min(steps.length - 1, Math.floor(pct / (100 / steps.length)));
-        if (si !== stepIdx) { stepIdx = si; status.textContent = steps[si]; }
+        if (pct > 25 && pct < 70) status.textContent = 'Аналізуємо скриншот через Gemini…';
+      }, 320);
 
-        if (pct >= 100) {
-          clearInterval(timer);
-          status.textContent = 'Готово — знайдено 3 оголошення';
-          renderRows();
+      var fd = new FormData();
+      selected.forEach(function (f) { fd.append('files', f, f.name || 'screenshot.jpg'); });
+
+      fetch('/api/analyze', { method: 'POST', body: fd })
+        .then(function (resp) {
+          return resp.json().then(function (data) { return { ok: resp.ok, data: data }; });
+        })
+        .then(function (res) {
+          clearInterval(waiting);
+          bar.style.width = '100%';
+          if (!res.ok) {
+            var detail = (res.data && res.data.detail) ? res.data.detail : 'Помилка аналізу';
+            throw new Error(detail);
+          }
+          status.textContent = 'Готово — параметри розпізнано';
+          renderParams(res.data.subject);
           setTimeout(function () {
+            progress.hidden = true;
             results.hidden = false;
             startBtn.disabled = false;
-            startBtn.textContent = 'Шукати ще раз';
+            startBtn.textContent = 'Проаналізувати ще раз';
             results.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          }, 350);
-        }
-      }, 340);
+          }, 300);
+        })
+        .catch(function (error) {
+          clearInterval(waiting);
+          progress.hidden = true;
+          startBtn.disabled = false;
+          startBtn.textContent = 'Почати пошук';
+          showError(error && error.message ? error.message : 'Не вдалося зв’язатися з сервером');
+        });
     });
   })();
 </script>
