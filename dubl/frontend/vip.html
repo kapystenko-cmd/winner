@@ -281,8 +281,10 @@
         '<td data-label="Кімнат">' + (num(s.rooms) || '—') + '</td>' +
         '<td data-label="Поверх">' + (num(s.floor) || '—') + '</td>' +
         '<td data-label="Фото">ваш об’єкт</td><td></td></tr>';
-      if (list && list.length) {
-        html += list.map(function (c) {
+      var all = list || [];
+      var confirmed = all.filter(function (c) { return (c.photo || {}).match === 'yes'; });
+      if (confirmed.length) {
+        html += confirmed.map(function (c) {
           return '<tr>' +
             '<td data-label="Майданчик">' + ({ 'dimria': 'DOM.RIA', 'dom.ria.com': 'DOM.RIA', 'olx': 'OLX' }[c.source] || c.source || '') + '</td>' +
             '<td data-label="Ціна" class="price">' + priceOf(c, cur) + '</td>' +
@@ -294,7 +296,7 @@
             '</tr>';
         }).join('');
       } else {
-        html += '<tr><td colspan="7">Нічого не знайдено за даними</td></tr>';
+        html += '<tr><td colspan="7" style="color:var(--muted)">Дублів того ж об’єкта не знайдено (перевірено за фото: ' + all.length + ')</td></tr>';
       }
       tb.innerHTML = html;
     }

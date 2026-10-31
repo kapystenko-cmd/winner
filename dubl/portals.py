@@ -414,6 +414,34 @@ _EXTRA_PORTALS = ["dom.ria.com", "rieltor.ua", "lun.ua", "m2bomber.com"]
 _WANTED_PORTALS = ["dom.ria.com", "rieltor.ua", "lun.ua", "m2bomber.com",
                    "flatfy.ua", "address.ua", "olx.ua"]
 
+_RE_ROOMS = re.compile(r'(\d)\s*[-–]?\s*(?:кімнат|комнат|кімн|-?\s*к\b)', re.I)
+_RE_AREA = re.compile(r'(\d{2,3}(?:[.,]\d+)?)\s*(?:м²|м2|кв\.?\s*м)', re.I)
+_RE_FLOOR = re.compile(r'(\d{1,2})\s*/\s*\d{1,2}', re.I)  # "2/5"
+
+
+def _parse_card_text(text: str) -> tuple[int | None, float | None, int | None]:
+    """Витягти кімнати / площу / поверх із заголовка+сніпета (для фільтра до фото)."""
+    rooms = area = floor = None
+    m = _RE_ROOMS.search(text or "")
+    if m:
+        try:
+            rooms = int(m.group(1))
+        except ValueError:
+            pass
+    m = _RE_AREA.search(text or "")
+    if m:
+        try:
+            area = float(m.group(1).replace(",", "."))
+        except ValueError:
+            pass
+    m = _RE_FLOOR.search(text or "")
+    if m:
+        try:
+            floor = int(m.group(1))
+        except ValueError:
+            pass
+    return rooms, area, floor
+
 
 async def search_extra_portals(subject: dict) -> list[dict]:
     """Оголошення на порталах через звичайний веб-пошук (без site:), фільтр за доменом.
@@ -450,9 +478,10 @@ async def search_extra_portals(subject: dict) -> list[dict]:
             portal = next((p for p in _WANTED_PORTALS if dom == p or dom.endswith("." + p)), None)
             if not portal or url in out:
                 continue
+            r_, a_, f_ = _parse_card_text((item.get("title") or "") + " " + (item.get("snippet") or ""))
             out[url] = {
                 "source": "olx" if portal == "olx.ua" else portal,
                 "url": url, "title": item.get("title") or "",
-                "price_uah": None, "area_sqm": None, "rooms": None, "floor": None,
+                "price_uah": None, "area_sqm": a_, "rooms": r_, "floor": f_,
             }
     return list(out.values())[:20]
