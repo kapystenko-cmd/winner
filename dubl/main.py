@@ -125,9 +125,21 @@ async def vip_search(files: list[UploadFile] = File(...)) -> dict:
         print(f"dubl vip extract error: {error}", flush=True)
         raise HTTPException(status_code=502, detail="Не вдалося проаналізувати скриншот")
 
-    from dubl.portals import search_dimria, search_olx, apply_filters, usd_rate, confirm_by_photo
-    dimria, olx = await asyncio.gather(search_dimria(subject), search_olx(subject))
-    candidates = apply_filters(subject, dimria + olx)
+    from dubl.portals import (search_dimria, search_olx, search_extra_portals,
+                              apply_filters, usd_rate, confirm_by_photo)
+    dimria, olx, extra = await asyncio.gather(
+        search_dimria(subject), search_olx(subject), search_extra_portals(subject)
+    )
+    candidates = apply_filters(subject, dimria + olx + extra)
+    # дедуп по url
+    seen, uniq = set(), []
+    for c in candidates:
+        u = c.get("url") or ""
+        if u and u in seen:
+            continue
+        seen.add(u)
+        uniq.append(c)
+    candidates = uniq
     # Якщо об'єкт у доларах — показуємо ціни кандидатів теж у $.
     if str(subject.get("price_currency") or "").upper() == "USD":
         rate = await usd_rate()
@@ -140,13 +152,13 @@ async def vip_search(files: list[UploadFile] = File(...)) -> dict:
 
     # M3: підтвердження по фото (на шорт-листі після строгого фільтра).
     if candidates:
-        semaphore = asyncio.Semaphore(3)
+        semaphore = asyncio.Semaphore(4)
 
         async def _confirm(c):
             async with semaphore:
                 c["photo"] = await confirm_by_photo(images, c)
 
-        await asyncio.gather(*[_confirm(c) for c in candidates[:8]])
+        await asyncio.gather(*[_confirm(c) for c in candidates[:10]])
         candidates.sort(
             key=lambda c: ((c.get("photo") or {}).get("match") == "yes", (c.get("photo") or {}).get("confidence", 0)),
             reverse=True,

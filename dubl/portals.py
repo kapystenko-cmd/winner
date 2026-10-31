@@ -385,3 +385,49 @@ async def confirm_by_photo(object_images: list[tuple[bytes, str]], candidate: di
     except Exception as error:
         print(f"dubl vip photo compare error: {type(error).__name__}: {error}", flush=True)
         return {"match": "error", "confidence": 0, "matched": 0}
+
+
+# ---------------------------------------------------------------- інші портали (Serper site:)
+# DOM.RIA через site-пошук (бо API на паузі) + rieltor/lun/m2bomber.
+_EXTRA_PORTALS = ["dom.ria.com", "rieltor.ua", "lun.ua", "m2bomber.com"]
+
+
+async def search_extra_portals(subject: dict, per_portal: int = 3) -> list[dict]:
+    """Знайти оголошення на кількох порталах через Serper (site:...), без парсерів.
+    Дані беруться мінімальні (url); підтвердження — по фото."""
+    from dubl.catalog import serper_search
+    city = subject.get("city") or ""
+    district = subject.get("district") or ""
+    rooms = subject.get("rooms")
+    area = subject.get("area_sqm")
+    deal = "оренда" if str(subject.get("deal_type")) == "rent" else "продаж"
+
+    async def one(portal: str) -> list[dict]:
+        parts = ["site:" + portal, deal, city, district]
+        if rooms:
+            parts.append(f"{rooms}-кімнатна")
+        if area:
+            try:
+                parts.append(f"{round(float(area))} м²")
+            except (TypeError, ValueError):
+                pass
+        query = " ".join(p for p in parts if p)
+        organic = await serper_search(query, num=20)
+        out = []
+        for item in organic:
+            url = item.get("link") or ""
+            if portal not in _domain(url):
+                continue
+            out.append({
+                "source": portal, "url": url, "title": item.get("title") or "",
+                "price_uah": None, "area_sqm": None, "rooms": None, "floor": None,
+            })
+            if len(out) >= per_portal:
+                break
+        return out
+
+    results = await asyncio.gather(*[one(p) for p in _EXTRA_PORTALS])
+    merged: list[dict] = []
+    for r in results:
+        merged.extend(r)
+    return merged

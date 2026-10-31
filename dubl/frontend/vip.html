@@ -284,7 +284,7 @@
       if (list && list.length) {
         html += list.map(function (c) {
           return '<tr>' +
-            '<td data-label="Майданчик">' + (c.source === 'dimria' ? 'DOM.RIA' : (c.source || '')) + '</td>' +
+            '<td data-label="Майданчик">' + ({ 'dimria': 'DOM.RIA', 'dom.ria.com': 'DOM.RIA', 'olx': 'OLX' }[c.source] || c.source || '') + '</td>' +
             '<td data-label="Ціна" class="price">' + priceOf(c, cur) + '</td>' +
             '<td data-label="Площа">' + (c.area_sqm ? c.area_sqm + ' м²' : '—') + '</td>' +
             '<td data-label="Кімнат">' + (c.rooms || '—') + '</td>' +
