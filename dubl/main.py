@@ -65,3 +65,11 @@ async def analyze(files: list[UploadFile] = File(...)) -> dict:
         "subject": subject,
         "next": "Пошук кандидатів і порівняння фото — наступні етапи (M2–M4).",
     }
+
+
+@app.get("/api/agencies")
+async def agencies(city: str) -> dict:
+    """M2 (тест): список агентств міста з Places + OSM (лише посилання/контакти)."""
+    from dubl.catalog import find_agencies
+    items = await find_agencies(city)
+    return {"city": city, "count": len(items), "agencies": items}
