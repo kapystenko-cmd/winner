@@ -18,6 +18,8 @@ class DublSettings(BaseSettings):
     dimria_enabled: bool = False
     # Google Places API (New) — карта агентств по місту (M2).
     google_places_api_key: str = ""
+    # Serper.dev — веб-пошук Google (агентства + розділи site:) (M2).
+    serper_api_key: str = ""
 
     # --- Сервіс ---
     port: int = 8020

@@ -105,17 +105,65 @@ async def find_agencies_osm(city: str) -> list[dict]:
         return []
 
 
+# Великі портали й не-агентські сайти — не вважаємо їх сайтами агентств
+# (їх обходимо окремо на етапі зрізу цін).
+_NON_AGENCY_DOMAINS = {
+    "olx.ua", "dom.ria.com", "ria.com", "lun.ua", "rieltor.ua", "m2bomber.com",
+    "flatfy.ua", "address.ua", "prom.ua", "ua.all.biz", "blizko.ua",
+    "facebook.com", "instagram.com", "youtube.com", "t.me", "tiktok.com",
+    "wikipedia.org", "google.com", "maps.google.com", "2gis.ua",
+}
+
+
+async def serper_search(query: str, num: int = 20) -> list[dict]:
+    """Веб-пошук Google через Serper.dev. Повертає organic-результати."""
+    key = settings.serper_api_key
+    if not key:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.post(
+                "https://google.serper.dev/search",
+                headers={"X-API-KEY": key, "Content-Type": "application/json"},
+                json={"q": query, "gl": "ua", "hl": "uk", "num": num},
+            )
+            resp.raise_for_status()
+            return resp.json().get("organic") or []
+    except Exception as error:
+        print(f"dubl catalog serper error ({query}): {error}", flush=True)
+        return []
+
+
+async def find_agencies_serper(city: str) -> list[dict]:
+    """Сайти агентств з веб-пошуку Google (Serper), без великих порталів."""
+    results = await serper_search(f"агентства нерухомості {city}")
+    out: dict[str, dict] = {}
+    for item in results:
+        dom = _domain(item.get("link"))
+        if not dom or dom in _NON_AGENCY_DOMAINS or dom in out:
+            continue
+        out[dom] = {
+            "name": item.get("title") or dom,
+            "website": "https://" + dom,
+            "phone": "",
+            "address": "",
+            "source": "serper",
+        }
+    return list(out.values())
+
+
 async def find_agencies(city: str) -> list[dict]:
-    """Об'єднаний список агентств міста (Places + OSM), дедуплікований по домену/назві."""
+    """Об'єднаний список агентств міста (Places + OSM + Serper), дедуплікований."""
     if not city:
         return []
-    places, osm = await asyncio.gather(
+    places, osm, serper = await asyncio.gather(
         find_agencies_places(city),
         find_agencies_osm(city),
+        find_agencies_serper(city),
     )
     merged: dict[str, dict] = {}
-    # Places першими — у них надійніше є сайт і телефон.
-    for item in places + osm:
+    # Places/OSM першими — у них надійніше є сайт і телефон; Serper добирає охоплення.
+    for item in places + osm + serper:
         kid = _domain(item.get("website")) or (item.get("name") or "")
         if not kid or kid in merged:
             continue
