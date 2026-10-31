@@ -92,3 +92,44 @@ async def catalog_stats() -> dict:
     from dubl import store
     await store.init()
     return await store.stats()
+
+
+async def _read_uploads(files: list[UploadFile]) -> list[tuple[bytes, str]]:
+    images: list[tuple[bytes, str]] = []
+    for upload in files[:_MAX_FILES]:
+        mime = (upload.content_type or "image/jpeg").lower()
+        if mime not in _ALLOWED_MIME:
+            raise HTTPException(status_code=400, detail=f"Непідтримуваний формат: {mime}")
+        raw = await upload.read()
+        if not raw:
+            continue
+        if len(raw) > 15 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="Файл завеликий (макс 15 МБ)")
+        images.append((raw, mime))
+    if not images:
+        raise HTTPException(status_code=400, detail="Порожні файли")
+    return images
+
+
+@app.post("/api/vip/search")
+async def vip_search(files: list[UploadFile] = File(...)) -> dict:
+    """VIP: пошук дублів по порталах. Етап 1 — DOM.RIA за даними."""
+    if not files:
+        raise HTTPException(status_code=400, detail="Не передано жодного скриншота")
+    images = await _read_uploads(files)
+    try:
+        subject = await extract_subject(images)
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error))
+    except Exception as error:
+        print(f"dubl vip extract error: {error}", flush=True)
+        raise HTTPException(status_code=502, detail="Не вдалося проаналізувати скриншот")
+
+    from dubl.portals import search_dimria
+    candidates = await search_dimria(subject)
+    return {
+        "subject": subject,
+        "count": len(candidates),
+        "candidates": candidates,
+        "note": "DOM.RIA за даними. OLX / rieltor.ua і підтвердження по фото — наступні етапи.",
+    }

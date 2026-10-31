@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>dubl.top VIP — пошук дублів по порталах</title>
+<meta name="description" content="VIP: повний пошук дублів об'єкта по DOM.RIA, OLX, rieltor.ua.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M3 10.6 12 3l9 7.6M5.2 9.4V20.2h13.6V9.4M9.7 20.2v-5.1h4.6v5.1' fill='none' stroke='%23caa200' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #ffffff;
+    --panel: #fffaf0;
+    --line: #efe4c6;
+    --fg: #1d1d1f;
+    --muted: #7a6f52;
+    --accent: #f5b800;        /* VIP — жовтий */
+    --accent-fg: #1d1d1f;
+    --track: #f0e6c8;
+    --stripe-a: #f3d679;
+    --stripe-b: #fbeec0;
+    --good: #1f8f4e;
+    --good-bg: #e7f6ec;
+    --radius: 18px;
+    --radius-sm: 12px;
+    color-scheme: light;
+    --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { background: var(--bg); color: var(--fg); font-family: var(--font); font-size: 14px; -webkit-font-smoothing: antialiased; line-height: 1.5; }
+  img { max-width: 100%; }
+  [hidden] { display: none !important; }
+
+  .wrap { width: 100%; max-width: 820px; margin-inline: auto;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 0; }
+
+  header { display: flex; align-items: center; justify-content: space-between; padding-block: 22px; }
+  .logo { display: inline-flex; align-items: center; gap: 9px; }
+  .logo-mark { width: 26px; height: 26px; color: #caa200; }
+  .logo-text { font-size: 1.35rem; font-weight: 600; letter-spacing: -0.02em; }
+  .logo-text .dot { color: var(--muted); }
+  .vip { font-size: 0.82rem; font-weight: 800; letter-spacing: 0.08em; color: var(--accent-fg);
+    background: var(--accent); border-radius: 999px; padding: 5px 12px; }
+
+  .hero { text-align: center; padding-block: 26px 8px; }
+  .hero h1 { margin: 0 auto; max-width: 18ch; font-size: clamp(1.8rem, 5.6vw, 3rem);
+    font-weight: 600; letter-spacing: -0.03em; line-height: 1.1; text-wrap: balance; }
+  .hero p { margin: 16px auto 0; max-width: 46ch; font-size: clamp(1rem, 2.5vw, 1.15rem); color: var(--muted); text-wrap: balance; }
+  .hl { background: linear-gradient(transparent 62%, var(--accent) 62%); padding: 0 2px; }
+
+  .card { margin-top: 30px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: clamp(18px, 4vw, 28px); }
+  .card-title { font-size: 1.15rem; font-weight: 600; letter-spacing: -0.01em; }
+  .hint { margin-top: 8px; color: var(--muted); font-size: 0.92rem; }
+
+  .slots { margin-top: 18px; display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 10px; }
+  .slot { position: relative; aspect-ratio: 1/1; border: 1.6px dashed var(--line); border-radius: var(--radius-sm);
+    background: var(--bg); display: grid; place-items: center; cursor: pointer; overflow: hidden; transition: border-color .15s ease; }
+  .slot:hover { border-color: var(--accent); }
+  .slot:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .slot.filled { border-style: solid; }
+  .slot-empty { display: grid; place-items: center; gap: 2px; color: var(--muted); }
+  .slot-num { font-size: 1.5rem; font-weight: 600; color: var(--fg); opacity: .25; }
+  .slot-plus { font-size: 0.82rem; }
+  .slot-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .slot-remove { position: absolute; top: 6px; right: 6px; width: 26px; height: 26px; border-radius: 50%;
+    border: none; background: rgba(0,0,0,.6); color: #fff; font-size: 1rem; line-height: 1; cursor: pointer; display: grid; place-items: center; }
+
+  .start { margin-top: 20px; width: 100%; border: none; border-radius: 999px; background: var(--accent); color: var(--accent-fg);
+    font-family: inherit; font-size: 1.05rem; font-weight: 700; letter-spacing: -0.01em; padding: 15px 20px; cursor: pointer; transition: opacity .15s ease, transform .08s ease; }
+  .start:hover:not(:disabled) { opacity: .9; }
+  .start:active:not(:disabled) { transform: scale(.99); }
+  .start:disabled { opacity: .4; cursor: not-allowed; }
+
+  .progress { margin-top: 26px; }
+  .status { font-size: 0.98rem; color: var(--muted); margin-bottom: 10px; font-variant-numeric: tabular-nums; }
+  .bar { height: 10px; border-radius: 999px; background: var(--track); overflow: hidden; }
+  .bar-fill { height: 100%; width: 0%; border-radius: 999px;
+    background-image: repeating-linear-gradient(45deg, var(--stripe-a) 0 11px, var(--stripe-b) 11px 22px);
+    background-size: 31px 31px; animation: stripes .55s linear infinite; transition: width .25s ease; }
+  @keyframes stripes { to { background-position: 31px 0; } }
+
+  .results { margin-top: 30px; }
+  .params { margin-top: 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+  .param { padding: 11px 13px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm); min-width: 0; }
+  .param .k { font-size: 0.76rem; color: var(--muted); }
+  .param .v { font-size: 1rem; font-weight: 600; margin-top: 2px; word-break: break-word; }
+
+  .tbl-wrap { margin-top: 14px; overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
+  thead th { text-align: left; font-weight: 600; font-size: 0.76rem; letter-spacing: 0.04em; text-transform: uppercase;
+    color: var(--muted); padding: 0 12px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  tbody td { padding: 13px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  td.price { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .link { color: #a67c00; font-weight: 600; text-decoration: none; white-space: nowrap; }
+  .link:hover { text-decoration: underline; }
+  .note { margin-top: 16px; padding: 13px 15px; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--muted); background: var(--panel); font-size: 0.9rem; }
+  .err { margin-top: 16px; padding: 14px 16px; border: 1px solid #b3261e; border-radius: var(--radius-sm); color: #b3261e; background: #fbeceb; font-size: 0.95rem; }
+
+  footer { color: var(--muted); font-size: 0.85rem; text-align: center; padding-block: 36px 28px; }
+
+  @media (max-width: 560px) {
+    thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    table, tbody, tr, td { display: block; width: 100%; }
+    tbody tr { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 6px 4px; margin-bottom: 12px; }
+    tbody td { border: none; display: flex; justify-content: space-between; gap: 16px; padding: 8px 13px; }
+    tbody td::before { content: attr(data-label); color: var(--muted); font-size: 0.78rem; font-weight: 600; }
+  }
+  @media (prefers-reduced-motion: reduce) { .bar-fill { animation: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <span class="logo">
+      <svg class="logo-mark" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M3 10.6 12 3l9 7.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M5.2 9.4V20.2h13.6V9.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M9.7 20.2v-5.1h4.6v5.1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span class="logo-text">dubl<span class="dot">.</span>top</span>
+    </span>
+    <span class="vip">ВИП</span>
+  </header>
+
+  <section class="hero">
+    <h1>Повний пошук дублів по <span class="hl">порталах</span></h1>
+    <p>Завантаж скриншоти об'єкта — знайдемо ті самі оголошення на DOM.RIA, OLX і rieltor.ua. Спочатку за даними, потім підтвердження по фото.</p>
+  </section>
+
+  <section class="card" aria-label="Завантаження скриншотів">
+    <div class="card-title">Завантаж 1–10 скриншотів об'єкта</div>
+    <p class="hint">Дані (адреса/місто, площа, поверх, кімнати) + фото. Можна Ctrl+V, перетягнути або вибрати кілька файлів одразу.</p>
+    <div class="slots" id="slots"></div>
+    <p class="hint" id="counter"></p>
+    <button class="start" id="start" disabled>Знайти дублі</button>
+  </section>
+
+  <section class="progress" id="progress" hidden aria-live="polite">
+    <div class="status" id="status">Аналізуємо…</div>
+    <div class="bar"><div class="bar-fill" id="barfill"></div></div>
+  </section>
+
+  <section class="results" id="results" hidden>
+    <div class="card-title">Параметри об'єкта</div>
+    <div class="params" id="params"></div>
+    <div class="card-title" style="margin-top:22px">Знайдено на порталах</div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Майданчик</th><th>Ціна</th><th>Площа</th><th>Кімнат</th><th>Поверх</th><th></th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <div class="note" id="resnote"></div>
+  </section>
+
+  <section id="errBox" hidden><div class="err" id="errText"></div></section>
+
+  <footer>dubl.top VIP · особистий інструмент</footer>
+</div>
+
+<script>
+  (function () {
+    var SLOT_COUNT = 10;
+    var files = new Array(SLOT_COUNT).fill(null);
+    var startBtn = document.getElementById('start');
+    var slotsContainer = document.getElementById('slots');
+    var counter = document.getElementById('counter');
+    var slotEls = [];
+
+    function filledCount() { return files.filter(function (f) { return !!f; }).length; }
+    function refreshButton() {
+      var n = filledCount();
+      startBtn.disabled = n < 1;
+      if (counter) counter.textContent = 'Додано ' + n + ' з 10 — мінімум 3, чим більше фото, тим точніше';
+    }
+    function updateVisibility() {
+      var firstEmpty = files.indexOf(null);
+      for (var i = 0; i < slotEls.length; i++) slotEls[i].hidden = !(files[i] || i === firstEmpty);
+    }
+    function renderSlot(idx, file) {
+      var slot = slotEls[idx];
+      slot.classList.add('filled');
+      slot.querySelector('.slot-empty').hidden = true;
+      slot.querySelector('.slot-remove').hidden = false;
+      var img = slot.querySelector('.slot-img');
+      var reader = new FileReader();
+      reader.onload = function (e) { img.src = e.target.result; img.hidden = false; };
+      reader.readAsDataURL(file);
+    }
+    function placeFiles(fileList, preferIdx) {
+      var arr = Array.prototype.slice.call(fileList || []).filter(function (f) { return f && f.type && f.type.indexOf('image/') === 0; });
+      for (var k = 0; k < arr.length; k++) {
+        var target = (k === 0 && preferIdx !== undefined && preferIdx !== null && !files[preferIdx]) ? preferIdx : files.indexOf(null);
+        if (target === -1) break;
+        files[target] = arr[k];
+        renderSlot(target, arr[k]);
+      }
+      refreshButton(); updateVisibility();
+    }
+    function buildSlots() {
+      for (var i = 0; i < SLOT_COUNT; i++) {
+        var slot = document.createElement('label');
+        slot.className = 'slot';
+        slot.innerHTML = '<input type="file" accept="image/*" multiple hidden>' +
+          '<span class="slot-empty"><span class="slot-num">' + (i + 1) + '</span><span class="slot-plus">додати</span></span>' +
+          '<img class="slot-img" alt="" hidden>' +
+          '<button type="button" class="slot-remove" hidden aria-label="Прибрати">×</button>';
+        slotsContainer.appendChild(slot);
+        slotEls.push(slot);
+        (function (idx, slotEl) {
+          var input = slotEl.querySelector('input');
+          var removeBtn = slotEl.querySelector('.slot-remove');
+          input.addEventListener('change', function () { if (input.files && input.files.length) placeFiles(input.files, idx); input.value = ''; });
+          removeBtn.addEventListener('click', function (ev) {
+            ev.preventDefault(); ev.stopPropagation();
+            input.value = '';
+            slotEl.querySelector('.slot-img').src = ''; slotEl.querySelector('.slot-img').hidden = true;
+            slotEl.querySelector('.slot-empty').hidden = false; removeBtn.hidden = true;
+            slotEl.classList.remove('filled'); files[idx] = null; refreshButton(); updateVisibility();
+          });
+        })(i, slot);
+      }
+    }
+    buildSlots(); refreshButton(); updateVisibility();
+
+    function handlePaste(e) {
+      if (e._dublHandled) return;
+      var dt = e.clipboardData || window.clipboardData; if (!dt) return;
+      var file = null, items = dt.items || [];
+      for (var i = 0; i < items.length; i++) if (items[i].kind === 'file' && items[i].type && items[i].type.indexOf('image/') === 0) { file = items[i].getAsFile(); if (file) break; }
+      if (!file && dt.files && dt.files.length) for (var j = 0; j < dt.files.length; j++) if (dt.files[j].type && dt.files[j].type.indexOf('image/') === 0) { file = dt.files[j]; break; }
+      if (!file) return;
+      var idx = files.indexOf(null); if (idx === -1) return;
+      placeFiles([file], idx); e._dublHandled = true; e.preventDefault();
+    }
+    document.addEventListener('paste', handlePaste);
+    window.addEventListener('paste', handlePaste);
+
+    var TYPE_LABELS = { apartment: 'Квартира', house: 'Будинок', land: 'Ділянка', commercial: 'Комерція' };
+    var DEAL_LABELS = { sale: 'Продаж', rent: 'Оренда' };
+    function num(v) { return (v === null || v === undefined || v === '') ? null : v; }
+
+    function renderParams(s) {
+      s = s || {};
+      var rows = [];
+      if (num(s.deal_type)) rows.push(['Тип угоди', DEAL_LABELS[s.deal_type] || s.deal_type]);
+      if (num(s.object_type)) rows.push(['Тип', TYPE_LABELS[s.object_type] || s.object_type]);
+      if (num(s.city)) rows.push(['Місто', s.city]);
+      if (num(s.district)) rows.push(['Район', s.district]);
+      if (num(s.rooms)) rows.push(['Кімнат', s.rooms]);
+      if (num(s.area_sqm)) rows.push(['Площа', s.area_sqm + ' м²']);
+      if (num(s.floor)) rows.push(['Поверх', s.floor + (num(s.total_floors) ? ' з ' + s.total_floors : '')]);
+      if (num(s.price_value)) rows.push(['Ціна', s.price_value + (num(s.price_currency) ? ' ' + (s.price_currency === 'USD' ? '$' : s.price_currency) : '')]);
+      document.getElementById('params').innerHTML = rows.map(function (r) {
+        return '<div class="param"><div class="k">' + r[0] + '</div><div class="v">' + r[1] + '</div></div>';
+      }).join('') || '<div class="param"><div class="v">Не вдалося зчитати параметри</div></div>';
+    }
+
+    function fmtPrice(uah) { return uah ? (Number(uah).toLocaleString('uk-UA') + ' грн') : '—'; }
+
+    function renderCandidates(list) {
+      var tb = document.getElementById('rows');
+      if (!list || !list.length) { tb.innerHTML = '<tr><td colspan="6">Нічого не знайдено за даними</td></tr>'; return; }
+      tb.innerHTML = list.map(function (c) {
+        return '<tr>' +
+          '<td data-label="Майданчик">' + (c.source === 'dimria' ? 'DOM.RIA' : (c.source || '')) + '</td>' +
+          '<td data-label="Ціна" class="price">' + fmtPrice(c.price_uah) + '</td>' +
+          '<td data-label="Площа">' + (c.area_sqm ? c.area_sqm + ' м²' : '—') + '</td>' +
+          '<td data-label="Кімнат">' + (c.rooms || '—') + '</td>' +
+          '<td data-label="Поверх">' + (c.floor || '—') + '</td>' +
+          '<td data-label="">' + (c.url ? '<a class="link" href="' + c.url + '" target="_blank" rel="noopener">Відкрити →</a>' : '') + '</td>' +
+          '</tr>';
+      }).join('');
+    }
+
+    function showError(m) { document.getElementById('errText').textContent = m; document.getElementById('errBox').hidden = false; }
+
+    startBtn.addEventListener('click', function () {
+      if (startBtn.disabled) return;
+      var selected = files.filter(function (f) { return !!f; });
+      if (!selected.length) return;
+      var progress = document.getElementById('progress'), results = document.getElementById('results'),
+          errBox = document.getElementById('errBox'), bar = document.getElementById('barfill'), status = document.getElementById('status');
+      results.hidden = true; errBox.hidden = true; progress.hidden = false;
+      startBtn.disabled = true; startBtn.textContent = 'Шукаємо…'; bar.style.width = '0%';
+      status.textContent = 'Аналізуємо скриншоти…';
+      progress.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+      var pct = 0;
+      var waiting = setInterval(function () {
+        pct += Math.random() * 6 + 2; if (pct > 92) pct = 92; bar.style.width = pct + '%';
+        if (pct > 30 && pct < 75) status.textContent = 'Шукаємо на порталах за даними…';
+      }, 400);
+
+      var fd = new FormData();
+      selected.forEach(function (f) { fd.append('files', f, f.name || 'screenshot.jpg'); });
+
+      fetch('/api/vip/search', { method: 'POST', body: fd })
+        .then(function (resp) { return resp.json().then(function (data) { return { ok: resp.ok, data: data }; }); })
+        .then(function (res) {
+          clearInterval(waiting); bar.style.width = '100%';
+          if (!res.ok) throw new Error((res.data && res.data.detail) ? res.data.detail : 'Помилка пошуку');
+          status.textContent = 'Готово — знайдено ' + res.data.count;
+          renderParams(res.data.subject);
+          renderCandidates(res.data.candidates);
+          document.getElementById('resnote').textContent = res.data.note || '';
+          setTimeout(function () {
+            progress.hidden = true; results.hidden = false;
+            startBtn.disabled = false; startBtn.textContent = 'Шукати ще раз';
+            results.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }, 300);
+        })
+        .catch(function (error) {
+          clearInterval(waiting); progress.hidden = true;
+          startBtn.disabled = false; startBtn.textContent = 'Знайти дублі';
+          showError(error && error.message ? error.message : 'Помилка з’єднання');
+        });
+    });
+  })();
+</script>
+</body>
+</html>
