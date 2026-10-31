@@ -411,7 +411,7 @@ _WANTED_PORTALS = ["dom.ria.com", "rieltor.ua", "lun.ua", "m2bomber.com",
 async def search_extra_portals(subject: dict) -> list[dict]:
     """Оголошення на порталах через звичайний веб-пошук (без site:), фільтр за доменом.
     Запит по вулиці — ключ до пошуку САМЕ оригіналу. Підтвердження — по фото."""
-    from dubl.catalog import serper_search
+    from dubl.catalog import serper_search, _domain
     city = subject.get("city") or ""
     district = subject.get("district") or ""
     street = subject.get("street") or ""
