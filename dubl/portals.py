@@ -402,37 +402,43 @@ async def confirm_by_photo(object_images: list[tuple[bytes, str]], candidate: di
 _EXTRA_PORTALS = ["dom.ria.com", "rieltor.ua", "lun.ua", "m2bomber.com"]
 
 
-async def search_extra_portals(subject: dict, per_portal: int = 3) -> list[dict]:
-    """Знайти оголошення на кількох порталах через Serper (site:...), без парсерів.
-    Дані беруться мінімальні (url); підтвердження — по фото."""
+# Портали, оголошення яких беремо з веб-пошуку (Serper free забороняє site:,
+# тому робимо звичайні запити і фільтруємо результати за доменом).
+_WANTED_PORTALS = ["dom.ria.com", "rieltor.ua", "lun.ua", "m2bomber.com",
+                   "flatfy.ua", "address.ua", "olx.ua"]
+
+
+async def search_extra_portals(subject: dict) -> list[dict]:
+    """Оголошення на порталах через звичайний веб-пошук (без site:), фільтр за доменом.
+    Запит по вулиці — ключ до пошуку САМЕ оригіналу. Підтвердження — по фото."""
     from dubl.catalog import serper_search
     city = subject.get("city") or ""
     district = subject.get("district") or ""
+    street = subject.get("street") or ""
     rooms = subject.get("rooms")
-    area = subject.get("area_sqm")
     deal = "оренда" if str(subject.get("deal_type")) == "rent" else "продаж"
+    rooms_part = f"{rooms}-кімнатна" if rooms else ""
 
-    async def one(portal: str) -> list[dict]:
-        parts = ["site:" + portal, deal, city, district]
-        if rooms:
-            parts.append(f"{rooms} кімнатна")
-        query = " ".join(p for p in parts if p)
-        organic = await serper_search(query, num=20)
-        out = []
+    queries = [
+        " ".join(p for p in [deal, rooms_part, "квартира", city, street] if p),
+        " ".join(p for p in [deal, rooms_part, "квартира", city, district] if p),
+    ]
+    out: dict[str, dict] = {}
+    seen_q: set[str] = set()
+    for query in queries:
+        if not query or query in seen_q:
+            continue
+        seen_q.add(query)
+        organic = await serper_search(query, num=30)
         for item in organic:
             url = item.get("link") or ""
-            if portal not in _domain(url):
+            dom = _domain(url)
+            portal = next((p for p in _WANTED_PORTALS if dom == p or dom.endswith("." + p)), None)
+            if not portal or url in out:
                 continue
-            out.append({
-                "source": portal, "url": url, "title": item.get("title") or "",
+            out[url] = {
+                "source": "olx" if portal == "olx.ua" else portal,
+                "url": url, "title": item.get("title") or "",
                 "price_uah": None, "area_sqm": None, "rooms": None, "floor": None,
-            })
-            if len(out) >= per_portal:
-                break
-        return out
-
-    results = await asyncio.gather(*[one(p) for p in _EXTRA_PORTALS])
-    merged: list[dict] = []
-    for r in results:
-        merged.extend(r)
-    return merged
+            }
+    return list(out.values())
