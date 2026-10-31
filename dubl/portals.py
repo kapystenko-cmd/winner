@@ -278,3 +278,110 @@ async def search_olx(subject: dict, limit: int = 60) -> list[dict]:
         low, high = area * (1 - tol), area * (1 + tol)
         out = [x for x in out if not x.get("area_sqm") or low <= float(x["area_sqm"]) <= high]
     return out
+
+
+# ---------------------------------------------------------------- M3: фото
+import re as _re
+
+_OG_IMG_RE = _re.compile(r'<meta[^>]+(?:property|name)=["\']og:image["\'][^>]+content=["\']([^"\']+)', _re.I)
+_OLX_IMG_RE = _re.compile(r'https://[a-z0-9.\-]*ol(?:x)?cdn\.com/[^\s"\'\\<>]+?\.(?:jpe?g|png|webp)', _re.I)
+_RIA_IMG_RE = _re.compile(r'https://cdn[0-9]*\.riastatic\.com/[^\s"\'\\<>]+?\.(?:jpe?g|png|webp)', _re.I)
+
+_PHOTO_PROMPT = (
+    "Тобі дано ФОТО ОБ'ЄКТА (зі скриншотів оголошення користувача) і ФОТО КАНДИДАТА (інше оголошення).\n"
+    "Визнач, чи це ТА САМА квартира/будинок (ті самі кімнати, планування, ремонт, вид з вікна, деталі), "
+    "навіть якщо фото обрізані, дзеркальні, з водяним знаком/логотипом, іншим освітленням чи порядком.\n"
+    "Поверни ТІЛЬКИ JSON: {\"same_object\": true/false, \"matched_photos\": <ціле>, \"confidence\": <0..1>}."
+)
+
+
+async def _fetch_html(url: str) -> str:
+    if settings.zenrows_api_key:
+        try:
+            async with httpx.AsyncClient(timeout=45) as client:
+                r = await client.get("https://api.zenrows.com/v1/", params={
+                    "apikey": settings.zenrows_api_key, "url": url, "js_render": "true",
+                })
+                r.raise_for_status()
+                return r.text
+        except Exception as error:
+            print(f"dubl vip fetch_html zr error: {error}", flush=True)
+    try:
+        async with httpx.AsyncClient(timeout=25, headers=_HDRS, follow_redirects=True) as client:
+            r = await client.get(url)
+            r.raise_for_status()
+            return r.text
+    except Exception as error:
+        print(f"dubl vip fetch_html error: {error}", flush=True)
+        return ""
+
+
+async def fetch_listing_photos(url: str, limit: int = 5) -> list[str]:
+    html = await _fetch_html(url)
+    if not html:
+        return []
+    urls: list[str] = []
+    m = _OG_IMG_RE.search(html)
+    if m:
+        urls.append(m.group(1))
+    for rx in (_OLX_IMG_RE, _RIA_IMG_RE):
+        for u in rx.findall(html):
+            if u not in urls:
+                urls.append(u)
+    return urls[:limit]
+
+
+async def _download_image(url: str, client: httpx.AsyncClient):
+    try:
+        r = await client.get(url, timeout=20)
+        r.raise_for_status()
+        ct = (r.headers.get("content-type") or "").split(";")[0].strip() or "image/jpeg"
+        if "image" not in ct or len(r.content) < 1500:
+            return None
+        return r.content, ct
+    except Exception:
+        return None
+
+
+async def confirm_by_photo(object_images: list[tuple[bytes, str]], candidate: dict) -> dict:
+    """Порівняти фото об'єкта зі скриншотів і фото кандидата через Gemini."""
+    if not settings.gemini_api_key:
+        return {"match": "no_key", "confidence": 0, "matched": 0}
+    photos = await fetch_listing_photos(candidate.get("url") or "", limit=5)
+    if not photos:
+        return {"match": "no_photos", "confidence": 0, "matched": 0}
+
+    import google.generativeai as genai
+    genai.configure(api_key=settings.gemini_api_key)
+    model = genai.GenerativeModel(settings.gemini_model)
+
+    content: list = [_PHOTO_PROMPT, "ФОТО ОБ'ЄКТА:"]
+    for raw, mime in object_images[:4]:
+        content.append({"mime_type": mime, "data": raw})
+    content.append("ФОТО КАНДИДАТА:")
+    got = 0
+    async with httpx.AsyncClient() as client:
+        downloaded = await asyncio.gather(*[_download_image(u, client) for u in photos])
+    for d in downloaded:
+        if d:
+            content.append({"mime_type": d[1], "data": d[0]})
+            got += 1
+    if got == 0:
+        return {"match": "no_photos", "confidence": 0, "matched": 0}
+
+    try:
+        resp = await asyncio.wait_for(
+            asyncio.to_thread(model.generate_content, content, request_options={"timeout": 30}),
+            timeout=45,
+        )
+        from dubl.extract import _parse_model_json
+        data = _parse_model_json(resp.text)
+        same = bool(data.get("same_object"))
+        return {
+            "match": "yes" if same else "no",
+            "confidence": float(data.get("confidence") or 0),
+            "matched": int(data.get("matched_photos") or 0),
+        }
+    except Exception as error:
+        print(f"dubl vip photo compare error: {type(error).__name__}: {error}", flush=True)
+        return {"match": "error", "confidence": 0, "matched": 0}

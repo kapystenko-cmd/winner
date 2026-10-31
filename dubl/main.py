@@ -125,7 +125,7 @@ async def vip_search(files: list[UploadFile] = File(...)) -> dict:
         print(f"dubl vip extract error: {error}", flush=True)
         raise HTTPException(status_code=502, detail="Не вдалося проаналізувати скриншот")
 
-    from dubl.portals import search_dimria, search_olx, apply_filters, usd_rate
+    from dubl.portals import search_dimria, search_olx, apply_filters, usd_rate, confirm_by_photo
     dimria, olx = await asyncio.gather(search_dimria(subject), search_olx(subject))
     candidates = apply_filters(subject, dimria + olx)
     # Якщо об'єкт у доларах — показуємо ціни кандидатів теж у $.
@@ -137,10 +137,27 @@ async def vip_search(files: list[UploadFile] = File(...)) -> dict:
                     c["price_usd"] = round(float(c["price_uah"]) / rate)
                 except (TypeError, ValueError):
                     pass
+
+    # M3: підтвердження по фото (на шорт-листі після строгого фільтра).
+    if candidates:
+        semaphore = asyncio.Semaphore(3)
+
+        async def _confirm(c):
+            async with semaphore:
+                c["photo"] = await confirm_by_photo(images, c)
+
+        await asyncio.gather(*[_confirm(c) for c in candidates[:8]])
+        candidates.sort(
+            key=lambda c: ((c.get("photo") or {}).get("match") == "yes", (c.get("photo") or {}).get("confidence", 0)),
+            reverse=True,
+        )
+
+    confirmed = sum(1 for c in candidates if (c.get("photo") or {}).get("match") == "yes")
     return {
         "subject": subject,
         "count": len(candidates),
+        "confirmed": confirmed,
         "candidates": candidates,
-        "note": "Кандидати за даними (кімнати і поверх строго, площа ±10%). "
-                "Підтвердження по фото і rieltor.ua — наступні етапи.",
+        "note": "Підтверджені по фото (вгорі) — дублі того ж об'єкта. "
+                "rieltor.ua і сайти агентств — наступні етапи.",
     }

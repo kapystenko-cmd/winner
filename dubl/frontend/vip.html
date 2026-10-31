@@ -147,7 +147,7 @@
     <div class="card-title" style="margin-top:22px">Знайдено на порталах <span id="objprice" style="font-weight:400;color:var(--muted);font-size:0.9rem"></span></div>
     <div class="tbl-wrap">
       <table>
-        <thead><tr><th>Майданчик</th><th>Ціна</th><th>Площа</th><th>Кімнат</th><th>Поверх</th><th></th></tr></thead>
+        <thead><tr><th>Майданчик</th><th>Ціна</th><th>Площа</th><th>Кімнат</th><th>Поверх</th><th>Фото</th><th></th></tr></thead>
         <tbody id="rows"></tbody>
       </table>
     </div>
@@ -248,6 +248,8 @@
       if (num(s.object_type)) rows.push(['Тип', TYPE_LABELS[s.object_type] || s.object_type]);
       if (num(s.city)) rows.push(['Місто', s.city]);
       if (num(s.district)) rows.push(['Район', s.district]);
+      var addr = [s.street, s.building].filter(function (x) { return num(x); }).join(', ');
+      if (addr) rows.push(['Вулиця', addr]);
       if (num(s.rooms)) rows.push(['Кімнат', s.rooms]);
       if (num(s.area_sqm)) rows.push(['Площа', s.area_sqm + ' м²']);
       if (num(s.floor)) rows.push(['Поверх', s.floor + (num(s.total_floors) ? ' з ' + s.total_floors : '')]);
@@ -259,20 +261,42 @@
 
     function fmtPrice(uah) { return uah ? (Number(uah).toLocaleString('uk-UA') + ' грн') : '—'; }
 
-    function renderCandidates(list, cur) {
+    function photoBadge(p) {
+      p = p || {};
+      if (p.match === 'yes') return '<span style="color:var(--good);font-weight:700">дубль ✓ ' + Math.round((p.confidence || 0) * 100) + '%</span>';
+      if (p.match === 'no') return '<span style="color:var(--muted)">не той об’єкт</span>';
+      if (p.match === 'no_photos') return '<span style="color:var(--muted)">нема фото</span>';
+      return '<span style="color:var(--muted)">—</span>';
+    }
+    function priceOf(c, cur) {
+      return (cur === 'USD' && c.price_usd) ? (Number(c.price_usd).toLocaleString('uk-UA') + ' $') : fmtPrice(c.price_uah);
+    }
+    function renderCandidates(list, cur, s) {
       var tb = document.getElementById('rows');
-      if (!list || !list.length) { tb.innerHTML = '<tr><td colspan="6">Нічого не знайдено за даними</td></tr>'; return; }
-      tb.innerHTML = list.map(function (c) {
-        var priceCell = (cur === 'USD' && c.price_usd) ? (Number(c.price_usd).toLocaleString('uk-UA') + ' $') : fmtPrice(c.price_uah);
-        return '<tr>' +
-          '<td data-label="Майданчик">' + (c.source === 'dimria' ? 'DOM.RIA' : (c.source || '')) + '</td>' +
-          '<td data-label="Ціна" class="price">' + priceCell + '</td>' +
-          '<td data-label="Площа">' + (c.area_sqm ? c.area_sqm + ' м²' : '—') + '</td>' +
-          '<td data-label="Кімнат">' + (c.rooms || '—') + '</td>' +
-          '<td data-label="Поверх">' + (c.floor || '—') + '</td>' +
-          '<td data-label="">' + (c.url ? '<a class="link" href="' + c.url + '" target="_blank" rel="noopener">Відкрити →</a>' : '') + '</td>' +
-          '</tr>';
-      }).join('');
+      var origPrice = num(s.price_value) ? (s.price_value + (s.price_currency === 'USD' ? ' $' : (s.price_currency ? ' ' + s.price_currency : ''))) : '—';
+      var html = '<tr style="background:var(--panel)">' +
+        '<td data-label="Майданчик"><b>Оригінал</b></td>' +
+        '<td data-label="Ціна" class="price">' + origPrice + '</td>' +
+        '<td data-label="Площа">' + (num(s.area_sqm) ? s.area_sqm + ' м²' : '—') + '</td>' +
+        '<td data-label="Кімнат">' + (num(s.rooms) || '—') + '</td>' +
+        '<td data-label="Поверх">' + (num(s.floor) || '—') + '</td>' +
+        '<td data-label="Фото">ваш об’єкт</td><td></td></tr>';
+      if (list && list.length) {
+        html += list.map(function (c) {
+          return '<tr>' +
+            '<td data-label="Майданчик">' + (c.source === 'dimria' ? 'DOM.RIA' : (c.source || '')) + '</td>' +
+            '<td data-label="Ціна" class="price">' + priceOf(c, cur) + '</td>' +
+            '<td data-label="Площа">' + (c.area_sqm ? c.area_sqm + ' м²' : '—') + '</td>' +
+            '<td data-label="Кімнат">' + (c.rooms || '—') + '</td>' +
+            '<td data-label="Поверх">' + (c.floor || '—') + '</td>' +
+            '<td data-label="Фото">' + photoBadge(c.photo) + '</td>' +
+            '<td data-label="">' + (c.url ? '<a class="link" href="' + c.url + '" target="_blank" rel="noopener">Відкрити →</a>' : '') + '</td>' +
+            '</tr>';
+        }).join('');
+      } else {
+        html += '<tr><td colspan="7">Нічого не знайдено за даними</td></tr>';
+      }
+      tb.innerHTML = html;
     }
 
     function showError(m) { document.getElementById('errText').textContent = m; document.getElementById('errBox').hidden = false; }
@@ -307,7 +331,7 @@
           var s = res.data.subject || {};
           var op = num(s.price_value) ? (s.price_value + (s.price_currency === 'USD' ? ' $' : (s.price_currency ? ' ' + s.price_currency : ''))) : '';
           document.getElementById('objprice').textContent = op ? '· ціна об’єкта: ' + op : '';
-          renderCandidates(res.data.candidates, s.price_currency);
+          renderCandidates(res.data.candidates, s.price_currency, s);
           document.getElementById('resnote').textContent = res.data.note || '';
           setTimeout(function () {
             progress.hidden = true; results.hidden = false;
