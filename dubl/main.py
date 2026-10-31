@@ -125,9 +125,18 @@ async def vip_search(files: list[UploadFile] = File(...)) -> dict:
         print(f"dubl vip extract error: {error}", flush=True)
         raise HTTPException(status_code=502, detail="Не вдалося проаналізувати скриншот")
 
-    from dubl.portals import search_dimria, search_olx, apply_filters
+    from dubl.portals import search_dimria, search_olx, apply_filters, usd_rate
     dimria, olx = await asyncio.gather(search_dimria(subject), search_olx(subject))
     candidates = apply_filters(subject, dimria + olx)
+    # Якщо об'єкт у доларах — показуємо ціни кандидатів теж у $.
+    if str(subject.get("price_currency") or "").upper() == "USD":
+        rate = await usd_rate()
+        for c in candidates:
+            if c.get("price_uah"):
+                try:
+                    c["price_usd"] = round(float(c["price_uah"]) / rate)
+                except (TypeError, ValueError):
+                    pass
     return {
         "subject": subject,
         "count": len(candidates),

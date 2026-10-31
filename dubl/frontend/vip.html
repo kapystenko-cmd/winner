@@ -259,13 +259,14 @@
 
     function fmtPrice(uah) { return uah ? (Number(uah).toLocaleString('uk-UA') + ' грн') : '—'; }
 
-    function renderCandidates(list) {
+    function renderCandidates(list, cur) {
       var tb = document.getElementById('rows');
       if (!list || !list.length) { tb.innerHTML = '<tr><td colspan="6">Нічого не знайдено за даними</td></tr>'; return; }
       tb.innerHTML = list.map(function (c) {
+        var priceCell = (cur === 'USD' && c.price_usd) ? (Number(c.price_usd).toLocaleString('uk-UA') + ' $') : fmtPrice(c.price_uah);
         return '<tr>' +
           '<td data-label="Майданчик">' + (c.source === 'dimria' ? 'DOM.RIA' : (c.source || '')) + '</td>' +
-          '<td data-label="Ціна" class="price">' + fmtPrice(c.price_uah) + '</td>' +
+          '<td data-label="Ціна" class="price">' + priceCell + '</td>' +
           '<td data-label="Площа">' + (c.area_sqm ? c.area_sqm + ' м²' : '—') + '</td>' +
           '<td data-label="Кімнат">' + (c.rooms || '—') + '</td>' +
           '<td data-label="Поверх">' + (c.floor || '—') + '</td>' +
@@ -306,7 +307,7 @@
           var s = res.data.subject || {};
           var op = num(s.price_value) ? (s.price_value + (s.price_currency === 'USD' ? ' $' : (s.price_currency ? ' ' + s.price_currency : ''))) : '';
           document.getElementById('objprice').textContent = op ? '· ціна об’єкта: ' + op : '';
-          renderCandidates(res.data.candidates);
+          renderCandidates(res.data.candidates, s.price_currency);
           document.getElementById('resnote').textContent = res.data.note || '';
           setTimeout(function () {
             progress.hidden = true; results.hidden = false;

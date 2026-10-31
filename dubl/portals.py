@@ -224,6 +224,17 @@ def _ensure_ocinka_env() -> None:
             os.environ[name] = value
 
 
+async def usd_rate() -> float:
+    """Курс USD→UAH (переиспользуємо get_usd_rate ocinka)."""
+    _ensure_ocinka_env()
+    try:
+        from app.services.olx_service import get_usd_rate
+        return float(await get_usd_rate())
+    except Exception as error:
+        print(f"dubl vip usd_rate error: {error}", flush=True)
+        return 41.5
+
+
 async def search_olx(subject: dict, limit: int = 60) -> list[dict]:
     """Кандидати з OLX через ZenRows — переиспользуємо перевірений olx_service ocinka."""
     if not settings.zenrows_api_key:
