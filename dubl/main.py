@@ -1,6 +1,6 @@
 """dubl.top API — FastAPI, ізольований сервіс на власному порту.
 
-M1: POST /api/analyze приймає 1–3 скриншоти і повертає параметри об'єкта
+M1: POST /api/analyze приймає до 10 скриншотів і повертає параметри об'єкта
 (Gemini). Наступні етапи (кандидати з сайтів агентств, порівняння фото,
 зріз цін DIM.RIA/OLX) додаються інкрементально без зміни цього контракту.
 """
@@ -22,7 +22,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_MAX_FILES = 3
+_MAX_FILES = 10
 _ALLOWED_MIME = {"image/jpeg", "image/png", "image/webp"}
 
 

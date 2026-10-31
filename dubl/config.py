@@ -34,8 +34,8 @@ class DublSettings(BaseSettings):
     # Скриншоти, фото кандидатів і дані оголошень обробляються В ПАМ'ЯТІ і
     # відкидаються одразу після відповіді. Тому тек для завантажень немає.
 
-    # Таймаут одного виклику Gemini.
-    gemini_timeout_seconds: int = 30
+    # Таймаут одного виклику Gemini (до 10 зображень — більше даних).
+    gemini_timeout_seconds: int = 45
 
     model_config = {
         "env_file": ".env.dubl",

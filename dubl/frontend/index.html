@@ -83,7 +83,7 @@
   .card-title { font-size: 1.15rem; font-weight: 600; letter-spacing: -0.01em; }
   .hint { margin-top: 8px; color: var(--muted); font-size: 0.92rem; }
 
-  .slots { margin-top: 18px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .slots { margin-top: 18px; display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 10px; }
   .slot {
     position: relative;
     aspect-ratio: 1 / 1;
@@ -187,28 +187,10 @@
 
   <section class="card" aria-label="Завантаження скриншотів">
     <div class="card-title">Завантажте 1–3 скриншоти об'єкта</div>
-    <p class="hint">На скриншотах має бути вся інформація про об'єкт: щонайменше 3 фото, адреса (або хоча б місто), площа, поверх, кількість кімнат тощо. Продаж або оренда, квартири та будинки — тип визначаємо автоматично. Можна натиснути <b>Ctrl+V</b>, щоб вставити скриншот із буфера (після PrintScreen).</p>
+    <p class="hint">Додайте від <b>3 до 10</b> скриншотів/фото об'єкта: окремо дані (адреса/місто, площа, поверх, кімнати) і самі фото (мінімум 3). Чим більше фото — тим точніший пошук. Продаж або оренда, квартири та будинки — тип визначаємо автоматично. Можна натиснути <b>Ctrl+V</b>, щоб вставити скриншот із буфера (після PrintScreen).</p>
 
-    <div class="slots" id="slots">
-      <label class="slot" data-i="1">
-        <input type="file" accept="image/*" hidden id="file1">
-        <span class="slot-empty"><span class="slot-num">1</span><span class="slot-plus">додати</span></span>
-        <img class="slot-img" alt="" hidden>
-        <button type="button" class="slot-remove" hidden aria-label="Прибрати">×</button>
-      </label>
-      <label class="slot" data-i="2">
-        <input type="file" accept="image/*" hidden id="file2">
-        <span class="slot-empty"><span class="slot-num">2</span><span class="slot-plus">додати</span></span>
-        <img class="slot-img" alt="" hidden>
-        <button type="button" class="slot-remove" hidden aria-label="Прибрати">×</button>
-      </label>
-      <label class="slot" data-i="3">
-        <input type="file" accept="image/*" hidden id="file3">
-        <span class="slot-empty"><span class="slot-num">3</span><span class="slot-plus">додати</span></span>
-        <img class="slot-img" alt="" hidden>
-        <button type="button" class="slot-remove" hidden aria-label="Прибрати">×</button>
-      </label>
-    </div>
+    <div class="slots" id="slots"></div>
+    <p class="hint" id="counter"></p>
 
     <button class="start" id="start" disabled>Почати пошук</button>
   </section>
@@ -235,12 +217,28 @@
 
 <script>
   (function () {
-    var files = [null, null, null];
+    var SLOT_COUNT = 10;
+    var files = new Array(SLOT_COUNT).fill(null);
     var startBtn = document.getElementById('start');
-    var slotEls = Array.prototype.slice.call(document.querySelectorAll('.slot'));
+    var slotsContainer = document.getElementById('slots');
+    var counter = document.getElementById('counter');
+    var slotEls = [];
+
+    function filledCount() {
+      return files.filter(function (f) { return !!f; }).length;
+    }
 
     function refreshButton() {
-      startBtn.disabled = !files.some(function (f) { return !!f; });
+      var n = filledCount();
+      startBtn.disabled = n < 1;
+      if (counter) counter.textContent = 'Додано ' + n + ' з 10 — мінімум 3, чим більше фото, тим точніше';
+    }
+
+    function updateVisibility() {
+      var firstEmpty = files.indexOf(null);
+      for (var i = 0; i < slotEls.length; i++) {
+        slotEls[i].hidden = !(files[i] || i === firstEmpty);
+      }
     }
 
     function setSlot(idx, file) {
@@ -257,34 +255,49 @@
         slot.classList.add('filled');
         files[idx] = file;
         refreshButton();
+        updateVisibility();
       };
       reader.readAsDataURL(file);
     }
 
-    slotEls.forEach(function (slot, idx) {
-      var input = slot.querySelector('input');
-      var img = slot.querySelector('.slot-img');
-      var empty = slot.querySelector('.slot-empty');
-      var removeBtn = slot.querySelector('.slot-remove');
+    function buildSlots() {
+      for (var i = 0; i < SLOT_COUNT; i++) {
+        var slot = document.createElement('label');
+        slot.className = 'slot';
+        slot.innerHTML =
+          '<input type="file" accept="image/*" hidden>' +
+          '<span class="slot-empty"><span class="slot-num">' + (i + 1) + '</span><span class="slot-plus">додати</span></span>' +
+          '<img class="slot-img" alt="" hidden>' +
+          '<button type="button" class="slot-remove" hidden aria-label="Прибрати">×</button>';
+        slotsContainer.appendChild(slot);
+        slotEls.push(slot);
+        (function (idx, slotEl) {
+          var input = slotEl.querySelector('input');
+          var removeBtn = slotEl.querySelector('.slot-remove');
+          input.addEventListener('change', function () {
+            var f = input.files && input.files[0];
+            if (f) setSlot(idx, f);
+          });
+          removeBtn.addEventListener('click', function (ev) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            input.value = '';
+            slotEl.querySelector('.slot-img').src = '';
+            slotEl.querySelector('.slot-img').hidden = true;
+            slotEl.querySelector('.slot-empty').hidden = false;
+            removeBtn.hidden = true;
+            slotEl.classList.remove('filled');
+            files[idx] = null;
+            refreshButton();
+            updateVisibility();
+          });
+        })(i, slot);
+      }
+    }
 
-      input.addEventListener('change', function () {
-        var f = input.files && input.files[0];
-        if (f) setSlot(idx, f);
-      });
-
-      removeBtn.addEventListener('click', function (ev) {
-        ev.preventDefault();
-        ev.stopPropagation();
-        input.value = '';
-        img.src = '';
-        img.hidden = true;
-        empty.hidden = false;
-        removeBtn.hidden = true;
-        slot.classList.remove('filled');
-        files[idx] = null;
-        refreshButton();
-      });
-    });
+    buildSlots();
+    refreshButton();
+    updateVisibility();
 
     // Вставка скриншота з буфера обміну (Ctrl+V після PrintScreen).
     function handlePaste(e) {
