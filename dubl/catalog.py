@@ -21,6 +21,12 @@ PLACES_URL = "https://places.googleapis.com/v1/places:searchText"
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 SERPER_URL = "https://google.serper.dev/search"
 _UA = {"User-Agent": "dubl.top/0.1 (real-estate duplicate finder)"}
+# Публічні інстанси Overpass часто дають 429/502 — перебираємо дзеркала.
+_OVERPASS_ENDPOINTS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://lz4.overpass-api.de/api/interpreter",
+]
 
 # Великі портали, агрегатори, соцмережі, ЗМІ, каталоги — це НЕ сайти агентств
 # (портали обходимо окремо на етапі зрізу цін).
@@ -85,6 +91,23 @@ def _is_agency_domain(dom: str) -> bool:
         if dom == bad or dom.endswith("." + bad):
             return False
     return True
+
+
+async def _overpass(query: str, timeout: int = 60) -> dict:
+    """POST у Overpass з перебором дзеркал і ретраями."""
+    last: Exception | None = None
+    for url in _OVERPASS_ENDPOINTS:
+        for attempt in range(2):
+            try:
+                async with httpx.AsyncClient(timeout=timeout + 30, headers=_UA) as client:
+                    resp = await client.post(url, data={"data": query})
+                    resp.raise_for_status()
+                    return resp.json()
+            except Exception as error:
+                last = error
+                print(f"dubl overpass {url} try{attempt}: {type(error).__name__}: {error}", flush=True)
+                await asyncio.sleep(3)
+    raise last or RuntimeError("overpass: усі дзеркала недоступні")
 
 
 # ---------------------------------------------------------------- Serper
@@ -195,64 +218,57 @@ async def find_agencies_places(city: str) -> list[dict]:
 # ---------------------------------------------------------------- OSM
 async def find_agencies_osm(city: str) -> list[dict]:
     query = (
-        '[out:json][timeout:25];'
+        '[out:json][timeout:60];'
         f'area["name"="{city}"]["boundary"="administrative"]->.a;'
         'nwr["office"="estate_agent"](area.a);'
-        'out center tags 400;'
+        'out center tags 500;'
     )
     try:
-        async with httpx.AsyncClient(timeout=40, headers=_UA) as client:
-            resp = await client.post(OVERPASS_URL, data={"data": query})
-            resp.raise_for_status()
-            out: dict[str, dict] = {}
-            for el in (resp.json().get("elements") or []):
-                tags = el.get("tags") or {}
-                name = tags.get("name") or ""
-                website = tags.get("website") or tags.get("contact:website") or ""
-                phone = tags.get("phone") or tags.get("contact:phone") or ""
-                kid = _domain(website) or name
-                if not kid or kid in out:
-                    continue
-                out[kid] = {
-                    "name": name, "website": website, "phone": phone,
-                    "address": "", "source": "osm",
-                }
-            return list(out.values())
+        data = await _overpass(query, timeout=60)
     except Exception as error:
         print(f"dubl catalog osm error: {type(error).__name__}: {error!r}", flush=True)
         return []
+    out: dict[str, dict] = {}
+    for el in (data.get("elements") or []):
+        tags = el.get("tags") or {}
+        name = tags.get("name") or ""
+        website = tags.get("website") or tags.get("contact:website") or ""
+        phone = tags.get("phone") or tags.get("contact:phone") or ""
+        kid = _domain(website) or name
+        if not kid or kid in out:
+            continue
+        out[kid] = {"name": name, "website": website, "phone": phone, "address": "", "source": "osm"}
+    return list(out.values())
 
 
 async def find_agencies_osm_country() -> list[dict]:
     """РАЗОВИЙ сид: усі office=estate_agent по Україні (з addr:city як місто)."""
+    # bbox України (пд,зх,пн,сх) — без важкого area-пошуку, надійніше для Overpass.
     query = (
-        '[out:json][timeout:240];'
-        'area["name"="Україна"]["admin_level"="2"]->.a;'
-        'nwr["office"="estate_agent"](area.a);'
+        '[out:json][timeout:180];'
+        'nwr["office"="estate_agent"](44.0,22.0,53.0,41.0);'
         'out center tags;'
     )
     try:
-        async with httpx.AsyncClient(timeout=260, headers=_UA) as client:
-            resp = await client.post(OVERPASS_URL, data={"data": query})
-            resp.raise_for_status()
-            out: dict[str, dict] = {}
-            for el in (resp.json().get("elements") or []):
-                tags = el.get("tags") or {}
-                website = tags.get("website") or tags.get("contact:website") or ""
-                dom = _domain(website)
-                if not dom or dom in out:
-                    continue
-                out[dom] = {
-                    "name": tags.get("name") or "",
-                    "website": website,
-                    "phone": tags.get("phone") or tags.get("contact:phone") or "",
-                    "city": tags.get("addr:city") or "",
-                    "source": "osm",
-                }
-            return list(out.values())
+        data = await _overpass(query, timeout=180)
     except Exception as error:
         print(f"dubl catalog osm-country error: {type(error).__name__}: {error!r}", flush=True)
         return []
+    out: dict[str, dict] = {}
+    for el in (data.get("elements") or []):
+        tags = el.get("tags") or {}
+        website = tags.get("website") or tags.get("contact:website") or ""
+        dom = _domain(website)
+        if not dom or dom in out:
+            continue
+        out[dom] = {
+            "name": tags.get("name") or "",
+            "website": website,
+            "phone": tags.get("phone") or tags.get("contact:phone") or "",
+            "city": tags.get("addr:city") or "",
+            "source": "osm",
+        }
+    return list(out.values())
 
 
 # ---------------------------------------------------------------- merge
