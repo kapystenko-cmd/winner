@@ -16,6 +16,8 @@ class DublSettings(BaseSettings):
     zenrows_api_key: str = ""
     dimria_api_key: str = ""
     dimria_enabled: bool = False
+    # Google Places API (New) — карта агентств по місту (M2).
+    google_places_api_key: str = ""
 
     # --- Сервіс ---
     port: int = 8020
