@@ -53,7 +53,13 @@ _SERPER_QUERIES = [
     "нерухомість {city} продаж квартир агентство",
     "нерухомість {city} оренда квартир агентство",
     "продаж будинків {city} агентство нерухомості",
+    "новобудови {city} агентство нерухомості",
+    "елітна нерухомість {city} агентство",
+    "комерційна нерухомість {city} агентство",
+    "ріелторські послуги {city}",
+    "купити квартиру {city} агентство нерухомості",
     "real estate agency {city}",
+    "real estate {city} Ukraine",
 ]
 _PLACES_QUERIES = [
     "агентство нерухомості {city}",
@@ -106,7 +112,7 @@ async def find_agencies_serper(city: str) -> list[dict]:
         tasks = []
         for template in _SERPER_QUERIES:
             query = template.format(city=city)
-            for page in range(1, 6):  # сторінки 1–5 (глибше Google майже не віддає)
+            for page in range(1, 5):  # сторінки 1–4 (глибше Google майже не віддає)
                 tasks.append(one(client, query, page))
         for organic in await asyncio.gather(*tasks):
             for item in organic:
@@ -234,4 +240,6 @@ async def find_agencies(city: str) -> list[dict]:
         if not kid or kid in merged:
             continue
         merged[kid] = item
-    return list(merged.values())
+    # Повертаємо ЛИШЕ агентства з реальним сайтом — їх можна сканувати.
+    # (OSM-записи без тега website відкидаємо: самої назви для пошуку замало.)
+    return [item for item in merged.values() if item.get("website")]
