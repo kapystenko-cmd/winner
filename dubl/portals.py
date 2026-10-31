@@ -210,6 +210,44 @@ def apply_filters(subject: dict, candidates: list[dict]) -> list[dict]:
     return out
 
 
+def match_verdict(subject: dict, c: dict) -> str | None:
+    """'original' — дані збігаються точно (той самий лістинг); 'dup' — підтверджено по фото."""
+    sr, cr = _as_int(subject.get("rooms")), _as_int(c.get("rooms"))
+    sf, cf = _as_int(subject.get("floor")), _as_int(c.get("floor"))
+    try:
+        sa = float(subject.get("area_sqm")) if subject.get("area_sqm") not in (None, "") else None
+    except (TypeError, ValueError):
+        sa = None
+    try:
+        ca = float(c.get("area_sqm")) if c.get("area_sqm") not in (None, "") else None
+    except (TypeError, ValueError):
+        ca = None
+    exact = bool(sr and cr and sr == cr and sf and cf and sf == cf
+                 and sa and ca and abs(ca - sa) / sa <= 0.05)
+    if exact:
+        sp = subject.get("price_value")
+        cp = c.get("price_usd") if str(subject.get("price_currency") or "").upper() == "USD" else c.get("price_uah")
+        try:
+            if sp and cp and abs(float(cp) - float(sp)) / float(sp) > 0.10:
+                exact = False
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
+    if exact:
+        return "original"
+    if (c.get("photo") or {}).get("match") == "yes":
+        return "dup"
+    return None
+
+
+def _looks_like_listing(url: str) -> bool:
+    """Відсікти сторінки пошуку/категорій (лишаємо тільки окремі оголошення)."""
+    low = (url or "").lower()
+    if any(b in low for b in ("q-", "/list/", "/search", "/filter", "/poshuk", "/poisk")):
+        return False
+    last = low.rstrip("/").rsplit("/", 1)[-1]
+    return any(ch.isdigit() for ch in last) or "id" in last
+
+
 # ---------------------------------------------------------------- OLX
 def _ensure_ocinka_env() -> None:
     """Прокинути ключі dubl у os.environ, щоб app.core.config (ocinka) їх побачив.
@@ -476,7 +514,7 @@ async def search_extra_portals(subject: dict) -> list[dict]:
             url = item.get("link") or ""
             dom = _domain(url)
             portal = next((p for p in _WANTED_PORTALS if dom == p or dom.endswith("." + p)), None)
-            if not portal or url in out:
+            if not portal or url in out or not _looks_like_listing(url):
                 continue
             r_, a_, f_ = _parse_card_text((item.get("title") or "") + " " + (item.get("snippet") or ""))
             out[url] = {

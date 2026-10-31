@@ -126,7 +126,7 @@ async def vip_search(files: list[UploadFile] = File(...)) -> dict:
         raise HTTPException(status_code=502, detail="Не вдалося проаналізувати скриншот")
 
     from dubl.portals import (search_dimria, search_olx, search_extra_portals,
-                              apply_filters, usd_rate, confirm_by_photo)
+                              apply_filters, usd_rate, confirm_by_photo, match_verdict)
     candidates: list = []
     try:
         parts = await asyncio.gather(
@@ -174,20 +174,21 @@ async def vip_search(files: list[UploadFile] = File(...)) -> dict:
                         c["photo"] = {"match": "error", "confidence": 0, "matched": 0}
 
             await asyncio.gather(*[_confirm(c) for c in candidates[:10]])
+            for c in candidates:
+                c["verdict"] = match_verdict(subject, c)
+            candidates = [c for c in candidates if c.get("verdict")]
             candidates.sort(
-                key=lambda c: ((c.get("photo") or {}).get("match") == "yes", (c.get("photo") or {}).get("confidence", 0)),
+                key=lambda c: (c.get("verdict") == "original", (c.get("photo") or {}).get("confidence", 0)),
                 reverse=True,
             )
     except Exception as error:
         import traceback
         print("dubl vip search error:\n" + traceback.format_exc(), flush=True)
 
-    confirmed = sum(1 for c in candidates if (c.get("photo") or {}).get("match") == "yes")
     return {
         "subject": subject,
         "count": len(candidates),
-        "confirmed": confirmed,
         "candidates": candidates,
-        "note": "Підтверджені по фото (вгорі) — дублі того ж об'єкта. "
-                "rieltor.ua і сайти агентств — наступні етапи.",
+        "note": "«оригінал ✓» — той самий лістинг (дані збіглися точно); "
+                "«той самий ✓» — підтверджено по фото. Решту відсіяно.",
     }

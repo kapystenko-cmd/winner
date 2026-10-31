@@ -261,12 +261,10 @@
 
     function fmtPrice(uah) { return uah ? (Number(uah).toLocaleString('uk-UA') + ' грн') : '—'; }
 
-    function photoBadge(p) {
-      p = p || {};
-      if (p.match === 'yes') return '<span style="color:var(--good);font-weight:700">той самий ✓ ' + Math.round((p.confidence || 0) * 100) + '%</span>';
-      if (p.match === 'no') return '<span style="color:var(--muted)">не той об’єкт</span>';
-      if (p.match === 'no_photos') return '<span style="color:var(--muted)">нема фото</span>';
-      return '<span style="color:var(--muted)">—</span>';
+    function verdictBadge(c) {
+      if (c.verdict === 'original') return '<span style="color:var(--good);font-weight:700">оригінал ✓</span>';
+      if (c.verdict === 'dup') return '<span style="color:var(--good);font-weight:700">той самий ✓ ' + Math.round(((c.photo || {}).confidence || 0) * 100) + '%</span>';
+      return '—';
     }
     function priceOf(c, cur) {
       return (cur === 'USD' && c.price_usd) ? (Number(c.price_usd).toLocaleString('uk-UA') + ' $') : fmtPrice(c.price_uah);
@@ -282,21 +280,20 @@
         '<td data-label="Поверх">' + (num(s.floor) || '—') + '</td>' +
         '<td data-label="Фото">ваш об’єкт</td><td></td></tr>';
       var all = list || [];
-      var confirmed = all.filter(function (c) { return (c.photo || {}).match === 'yes'; });
-      if (confirmed.length) {
-        html += confirmed.map(function (c) {
+      if (all.length) {
+        html += all.map(function (c) {
           return '<tr>' +
             '<td data-label="Майданчик">' + ({ 'dimria': 'DOM.RIA', 'dom.ria.com': 'DOM.RIA', 'olx': 'OLX' }[c.source] || c.source || '') + '</td>' +
             '<td data-label="Ціна" class="price">' + priceOf(c, cur) + '</td>' +
             '<td data-label="Площа">' + (c.area_sqm ? c.area_sqm + ' м²' : '—') + '</td>' +
             '<td data-label="Кімнат">' + (c.rooms || '—') + '</td>' +
             '<td data-label="Поверх">' + (c.floor || '—') + '</td>' +
-            '<td data-label="Фото">' + photoBadge(c.photo) + '</td>' +
+            '<td data-label="Фото">' + verdictBadge(c) + '</td>' +
             '<td data-label="">' + (c.url ? '<a class="link" href="' + c.url + '" target="_blank" rel="noopener">Відкрити →</a>' : '') + '</td>' +
             '</tr>';
         }).join('');
       } else {
-        html += '<tr><td colspan="7" style="color:var(--muted)">Дублів того ж об’єкта не знайдено (перевірено за фото: ' + all.length + ')</td></tr>';
+        html += '<tr><td colspan="7" style="color:var(--muted)">Дублів того ж об’єкта не знайдено</td></tr>';
       }
       tb.innerHTML = html;
     }
