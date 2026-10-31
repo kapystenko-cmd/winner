@@ -223,6 +223,38 @@ async def find_agencies_osm(city: str) -> list[dict]:
         return []
 
 
+async def find_agencies_osm_country() -> list[dict]:
+    """РАЗОВИЙ сид: усі office=estate_agent по Україні (з addr:city як місто)."""
+    query = (
+        '[out:json][timeout:240];'
+        'area["name"="Україна"]["admin_level"="2"]->.a;'
+        'nwr["office"="estate_agent"](area.a);'
+        'out center tags;'
+    )
+    try:
+        async with httpx.AsyncClient(timeout=260, headers=_UA) as client:
+            resp = await client.post(OVERPASS_URL, data={"data": query})
+            resp.raise_for_status()
+            out: dict[str, dict] = {}
+            for el in (resp.json().get("elements") or []):
+                tags = el.get("tags") or {}
+                website = tags.get("website") or tags.get("contact:website") or ""
+                dom = _domain(website)
+                if not dom or dom in out:
+                    continue
+                out[dom] = {
+                    "name": tags.get("name") or "",
+                    "website": website,
+                    "phone": tags.get("phone") or tags.get("contact:phone") or "",
+                    "city": tags.get("addr:city") or "",
+                    "source": "osm",
+                }
+            return list(out.values())
+    except Exception as error:
+        print(f"dubl catalog osm-country error: {type(error).__name__}: {error!r}", flush=True)
+        return []
+
+
 # ---------------------------------------------------------------- merge
 async def find_agencies(city: str) -> list[dict]:
     """Об'єднаний список агентств міста (Places + OSM + Serper), дедуплікований."""

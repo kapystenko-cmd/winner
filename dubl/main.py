@@ -6,6 +6,8 @@ M1: POST /api/analyze приймає до 10 скриншотів і повер�
 """
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -69,7 +71,24 @@ async def analyze(files: list[UploadFile] = File(...)) -> dict:
 
 @app.get("/api/agencies")
 async def agencies(city: str) -> dict:
-    """M2 (тест): список агентств міста з Places + OSM (лише посилання/контакти)."""
-    from dubl.catalog import find_agencies
-    items = await find_agencies(city)
-    return {"city": city, "count": len(items), "agencies": items}
+    """Агентства міста з каталогу + свіжий добір (Serper+OSM), що зростає з запитами."""
+    from dubl import store
+    from dubl.catalog import find_agencies_serper, find_agencies_osm
+    await store.init()
+    # Свіжий добір по місту (web-пошук + OSM), тільки з сайтом → у каталог.
+    serper, osm = await asyncio.gather(
+        find_agencies_serper(city), find_agencies_osm(city)
+    )
+    fresh = [{**a, "city": city} for a in (serper + osm) if a.get("website")]
+    await store.upsert(fresh)
+    # Повертаємо все, що є в каталозі по цьому місту (сид + накопичене).
+    items = await store.by_city(city)
+    return {"city": city, "count": len(items), "fresh_found": len(fresh), "agencies": items}
+
+
+@app.get("/api/catalog/stats")
+async def catalog_stats() -> dict:
+    """Стан каталогу: скільки агентств усього, з сайтом, топ міст."""
+    from dubl import store
+    await store.init()
+    return await store.stats()
