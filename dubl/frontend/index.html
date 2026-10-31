@@ -287,20 +287,32 @@
     });
 
     // Вставка скриншота з буфера обміну (Ctrl+V після PrintScreen).
-    document.addEventListener('paste', function (e) {
-      var items = (e.clipboardData && e.clipboardData.items) || [];
+    function handlePaste(e) {
+      if (e._dublHandled) return; // paste спливає і на document, і на window
+      var dt = e.clipboardData || window.clipboardData;
+      if (!dt) return;
+      var file = null;
+      var items = dt.items || [];
       for (var i = 0; i < items.length; i++) {
-        if (items[i].type && items[i].type.indexOf('image/') === 0) {
-          var file = items[i].getAsFile();
-          if (!file) continue;
-          var idx = files.indexOf(null);
-          if (idx === -1) return; // усі 3 слоти зайняті
-          setSlot(idx, file);
-          e.preventDefault();
-          return;
+        if (items[i].kind === 'file' && items[i].type && items[i].type.indexOf('image/') === 0) {
+          file = items[i].getAsFile();
+          if (file) break;
         }
       }
-    });
+      if (!file && dt.files && dt.files.length) {
+        for (var j = 0; j < dt.files.length; j++) {
+          if (dt.files[j].type && dt.files[j].type.indexOf('image/') === 0) { file = dt.files[j]; break; }
+        }
+      }
+      if (!file) return;
+      var idx = files.indexOf(null);
+      if (idx === -1) return; // усі 3 слоти зайняті
+      setSlot(idx, file);
+      e._dublHandled = true;
+      e.preventDefault();
+    }
+    document.addEventListener('paste', handlePaste);
+    window.addEventListener('paste', handlePaste);
 
     var TYPE_LABELS = { apartment: 'Квартира', house: 'Будинок', land: 'Ділянка', commercial: 'Комерція' };
     var DEAL_LABELS = { sale: 'Продаж', rent: 'Оренда' };
