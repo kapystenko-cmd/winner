@@ -181,13 +181,13 @@
   </header>
 
   <section class="hero">
-    <h1>Просто знаходьте дублі оголошень нерухомості</h1>
-    <p>Завантажте скриншот оголошення — ми знайдемо те саме житло в інших агентствах і покажемо ціни та власника.</p>
+    <h1>Один об'єкт — усі оголошення</h1>
+    <p>Завантажте скриншот оголошення про <b>продаж або оренду</b> — знайдемо те саме житло в інших агентствах, покажемо ціни та власника. Тип угоди визначаємо автоматично.</p>
   </section>
 
   <section class="card" aria-label="Завантаження скриншотів">
     <div class="card-title">Завантажте 1–3 скриншоти об'єкта</div>
-    <p class="hint">На скриншотах має бути вся інформація про об'єкт: щонайменше 3 фото, адреса (або хоча б місто), площа, поверх, кількість кімнат тощо. Квартири та будинки.</p>
+    <p class="hint">На скриншотах має бути вся інформація про об'єкт: щонайменше 3 фото, адреса (або хоча б місто), площа, поверх, кількість кімнат тощо. Продаж або оренда, квартири та будинки — тип визначаємо автоматично.</p>
 
     <div class="slots" id="slots">
       <label class="slot" data-i="1">
@@ -280,11 +280,13 @@
     });
 
     var TYPE_LABELS = { apartment: 'Квартира', house: 'Будинок', land: 'Ділянка', commercial: 'Комерція' };
+    var DEAL_LABELS = { sale: 'Продаж', rent: 'Оренда' };
 
     function num(v) { return (v === null || v === undefined || v === '') ? null : v; }
 
     function buildParams(s) {
       var rows = [];
+      if (num(s.deal_type)) rows.push(['Тип угоди', DEAL_LABELS[s.deal_type] || s.deal_type]);
       if (num(s.object_type)) rows.push(['Тип об’єкта', TYPE_LABELS[s.object_type] || s.object_type]);
       if (num(s.city)) rows.push(['Місто', s.city]);
       if (num(s.district)) rows.push(['Район', s.district]);
