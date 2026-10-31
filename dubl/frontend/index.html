@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>dubl.top — пошук дублів оголошень нерухомості</title>
+<meta name="description" content="Завантажте скриншот оголошення — знайдемо те саме житло в інших агентствах, покажемо ціни та власника.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M3 10.6 12 3l9 7.6M5.2 9.4V20.2h13.6V9.4M9.7 20.2v-5.1h4.6v5.1' fill='none' stroke='%231d1d1f' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+  /* Layout: single centered column, Apple-like generous whitespace; mono palette (black / gray / white) + one semantic green for "власник / висока" */
+  :root {
+    --bg: #ffffff;
+    --panel: #f5f5f7;
+    --line: #e4e4e7;
+    --fg: #1d1d1f;
+    --muted: #6e6e73;
+    --accent: #1d1d1f;
+    --accent-fg: #ffffff;
+    --track: #ececee;
+    --stripe-a: #cfcfd4;
+    --stripe-b: #e8e8ec;
+    --good: #1f8f4e;
+    --good-bg: #e7f6ec;
+    --warn: #9a6b00;
+    --warn-bg: #f7efdc;
+    --radius: 18px;
+    --radius-sm: 12px;
+    color-scheme: light;
+    --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body { background: var(--bg); color: var(--fg); font-family: var(--font); font-size: 14px; -webkit-font-smoothing: antialiased; line-height: 1.5; }
+  img { max-width: 100%; }
+  [hidden] { display: none !important; }
+
+  .wrap {
+    width: 100%;
+    max-width: 760px;
+    margin-inline: auto;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 0;
+  }
+
+  /* Header / logo */
+  header { display: flex; align-items: center; justify-content: space-between; padding-block: 22px; }
+  .logo { display: inline-flex; align-items: center; gap: 9px; }
+  .logo-mark { width: 26px; height: 26px; color: var(--fg); }
+  .logo-text { font-size: 1.35rem; font-weight: 600; letter-spacing: -0.02em; }
+  .logo-text .dot { color: var(--muted); }
+  .lang { font-size: 0.8rem; font-weight: 600; letter-spacing: 0.04em; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px; }
+
+  /* Hero */
+  .hero { text-align: center; padding-block: 30px 10px; }
+  .hero h1 {
+    margin: 0 auto;
+    max-width: 16ch;
+    font-size: clamp(2rem, 6.4vw, 3.4rem);
+    font-weight: 600;
+    letter-spacing: -0.03em;
+    line-height: 1.08;
+    text-wrap: balance;
+  }
+  .hero p {
+    margin: 18px auto 0;
+    max-width: 44ch;
+    font-size: clamp(1rem, 2.5vw, 1.2rem);
+    color: var(--muted);
+    text-wrap: balance;
+  }
+
+  /* Upload */
+  .card {
+    margin-top: 34px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: clamp(18px, 4vw, 28px);
+  }
+  .card-title { font-size: 1.15rem; font-weight: 600; letter-spacing: -0.01em; }
+  .hint { margin-top: 8px; color: var(--muted); font-size: 0.92rem; }
+
+  .slots { margin-top: 18px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .slot {
+    position: relative;
+    aspect-ratio: 1 / 1;
+    border: 1.6px dashed var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    overflow: hidden;
+    transition: border-color .15s ease, transform .12s ease;
+  }
+  .slot:hover { border-color: var(--muted); }
+  .slot:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .slot.filled { border-style: solid; border-color: var(--line); }
+  .slot-empty { display: grid; place-items: center; gap: 2px; color: var(--muted); }
+  .slot-num { font-size: 1.5rem; font-weight: 600; color: var(--fg); opacity: .25; }
+  .slot-plus { font-size: 0.82rem; }
+  .slot-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .slot-remove {
+    position: absolute; top: 6px; right: 6px;
+    width: 26px; height: 26px; border-radius: 50%;
+    border: none; background: rgba(0,0,0,.6); color: #fff;
+    font-size: 1rem; line-height: 1; cursor: pointer;
+    display: grid; place-items: center;
+  }
+
+  /* Action */
+  .start {
+    margin-top: 20px;
+    width: 100%;
+    border: none;
+    border-radius: 999px;
+    background: var(--accent);
+    color: var(--accent-fg);
+    font-family: inherit;
+    font-size: 1.05rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    padding: 15px 20px;
+    cursor: pointer;
+    transition: opacity .15s ease, transform .08s ease;
+  }
+  .start:hover:not(:disabled) { opacity: .88; }
+  .start:active:not(:disabled) { transform: scale(.99); }
+  .start:disabled { opacity: .35; cursor: not-allowed; }
+
+  /* Progress */
+  .progress { margin-top: 26px; }
+  .status { font-size: 0.98rem; color: var(--muted); margin-bottom: 10px; font-variant-numeric: tabular-nums; }
+  .bar { height: 10px; border-radius: 999px; background: var(--track); overflow: hidden; }
+  .bar-fill {
+    height: 100%; width: 0%;
+    border-radius: 999px;
+    background-image: repeating-linear-gradient(45deg, var(--stripe-a) 0 11px, var(--stripe-b) 11px 22px);
+    background-size: 31px 31px;
+    animation: stripes .55s linear infinite;
+    transition: width .25s ease;
+  }
+  @keyframes stripes { to { background-position: 31px 0; } }
+
+  /* Results */
+  .results { margin-top: 30px; }
+  .demo-badge {
+    display: inline-block; font-size: 0.74rem; font-weight: 700; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--muted);
+    border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px;
+  }
+  .summary {
+    margin-top: 14px; display: flex; flex-wrap: wrap; gap: 10px 26px; align-items: baseline;
+    padding: 16px 18px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-sm);
+  }
+  .summary .big { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+  .summary .lbl { font-size: 0.85rem; color: var(--muted); }
+
+  .tbl-wrap { margin-top: 16px; overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
+  thead th {
+    text-align: left; font-weight: 600; font-size: 0.78rem; letter-spacing: 0.04em; text-transform: uppercase;
+    color: var(--muted); padding: 0 14px 10px; border-bottom: 1px solid var(--line); white-space: nowrap;
+  }
+  tbody td { padding: 14px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  td.price { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .pill { display: inline-block; font-size: 0.8rem; font-weight: 600; padding: 3px 10px; border-radius: 999px; white-space: nowrap; }
+  .pill.owner { color: var(--good); background: var(--good-bg); }
+  .pill.biz { color: var(--muted); background: var(--panel); border: 1px solid var(--line); }
+  .pill.hi { color: var(--good); background: var(--good-bg); }
+  .pill.mid { color: var(--warn); background: var(--warn-bg); }
+  .link { color: var(--fg); font-weight: 600; text-decoration: none; white-space: nowrap; }
+  .link:hover { text-decoration: underline; }
+
+  footer { color: var(--muted); font-size: 0.85rem; text-align: center; padding-block: 40px 30px; }
+  footer p { margin: 4px 0; }
+
+  /* Mobile: table becomes cards */
+  @media (max-width: 560px) {
+    thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    table, tbody, tr, td { display: block; width: 100%; }
+    tbody tr { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 6px 4px; margin-bottom: 12px; }
+    tbody td { border: none; display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 9px 14px; }
+    tbody td::before { content: attr(data-label); color: var(--muted); font-size: 0.8rem; font-weight: 600; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .bar-fill { animation: none; }
+    .start:active:not(:disabled) { transform: none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <span class="logo">
+      <svg class="logo-mark" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M3 10.6 12 3l9 7.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M5.2 9.4V20.2h13.6V9.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M9.7 20.2v-5.1h4.6v5.1" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span class="logo-text">dubl<span class="dot">.</span>top</span>
+    </span>
+    <span class="lang">UA</span>
+  </header>
+
+  <section class="hero">
+    <h1>Просто знаходьте дублі оголошень нерухомості</h1>
+    <p>Завантажте скриншот оголошення — ми знайдемо те саме житло в інших агентствах і покажемо ціни та власника.</p>
+  </section>
+
+  <section class="card" aria-label="Завантаження скриншотів">
+    <div class="card-title">Завантажте 1–3 скриншоти об'єкта</div>
+    <p class="hint">На скриншотах має бути вся інформація про об'єкт: щонайменше 3 фото, адреса (або хоча б місто), площа, поверх, кількість кімнат тощо. Квартири та будинки.</p>
+
+    <div class="slots" id="slots">
+      <label class="slot" data-i="1">
+        <input type="file" accept="image/*" hidden id="file1">
+        <span class="slot-empty"><span class="slot-num">1</span><span class="slot-plus">додати</span></span>
+        <img class="slot-img" alt="" hidden>
+        <button type="button" class="slot-remove" hidden aria-label="Прибрати">×</button>
+      </label>
+      <label class="slot" data-i="2">
+        <input type="file" accept="image/*" hidden id="file2">
+        <span class="slot-empty"><span class="slot-num">2</span><span class="slot-plus">додати</span></span>
+        <img class="slot-img" alt="" hidden>
+        <button type="button" class="slot-remove" hidden aria-label="Прибрати">×</button>
+      </label>
+      <label class="slot" data-i="3">
+        <input type="file" accept="image/*" hidden id="file3">
+        <span class="slot-empty"><span class="slot-num">3</span><span class="slot-plus">додати</span></span>
+        <img class="slot-img" alt="" hidden>
+        <button type="button" class="slot-remove" hidden aria-label="Прибрати">×</button>
+      </label>
+    </div>
+
+    <button class="start" id="start" disabled>Почати пошук</button>
+  </section>
+
+  <section class="progress" id="progress" hidden aria-live="polite">
+    <div class="status" id="status">Аналізуємо скриншот…</div>
+    <div class="bar"><div class="bar-fill" id="barfill"></div></div>
+  </section>
+
+  <section class="results" id="results" hidden>
+    <span class="demo-badge">Приклад результату</span>
+    <div class="summary">
+      <span><span class="big" id="sumRange">$48 500 – $53 000</span><br><span class="lbl">діапазон цін об'єкта</span></span>
+      <span><span class="big">3</span><br><span class="lbl">оголошення · 2 агентства</span></span>
+      <span><span class="big" style="color:var(--good)">Так</span><br><span class="lbl">є оголошення від власника</span></span>
+    </div>
+
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr><th>Майданчик</th><th>Ціна</th><th>Тип</th><th>Впевненість</th><th></th></tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>
+    <p>Мова: українська · інші мови з'являться згодом окремими розділами</p>
+    <p>Дані в таблиці — приклад. Реальний пошук підключається далі.</p>
+  </footer>
+</div>
+
+<script>
+  (function () {
+    var files = [null, null, null];
+    var startBtn = document.getElementById('start');
+    var slotEls = Array.prototype.slice.call(document.querySelectorAll('.slot'));
+
+    function refreshButton() {
+      var any = files.some(function (f) { return !!f; });
+      startBtn.disabled = !any;
+    }
+
+    slotEls.forEach(function (slot, idx) {
+      var input = slot.querySelector('input');
+      var img = slot.querySelector('.slot-img');
+      var empty = slot.querySelector('.slot-empty');
+      var removeBtn = slot.querySelector('.slot-remove');
+
+      input.addEventListener('change', function () {
+        var f = input.files && input.files[0];
+        if (!f) return;
+        var reader = new FileReader();
+        reader.onload = function (e) {
+          img.src = e.target.result;
+          img.hidden = false;
+          empty.hidden = true;
+          removeBtn.hidden = false;
+          slot.classList.add('filled');
+          files[idx] = f;
+          refreshButton();
+        };
+        reader.readAsDataURL(f);
+      });
+
+      removeBtn.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        input.value = '';
+        img.src = '';
+        img.hidden = true;
+        empty.hidden = false;
+        removeBtn.hidden = true;
+        slot.classList.remove('filled');
+        files[idx] = null;
+        refreshButton();
+      });
+    });
+
+    // Demo results (example data, replaced by the real search backend later)
+    var demoRows = [
+      { place: 'Агенція «Домівка»', price: '$52 000', type: 'biz', typeLabel: 'бізнес', conf: 'hi', confLabel: 'висока', url: '#' },
+      { place: 'OLX', price: '$48 500', type: 'owner', typeLabel: 'власник', conf: 'hi', confLabel: 'висока', url: 'https://www.olx.ua' },
+      { place: 'DOM.RIA', price: '$53 000', type: 'biz', typeLabel: 'бізнес', conf: 'mid', confLabel: 'середня', url: 'https://dom.ria.com' }
+    ];
+
+    function renderRows() {
+      var tb = document.getElementById('rows');
+      tb.innerHTML = '';
+      demoRows.forEach(function (r) {
+        var tr = document.createElement('tr');
+        var linkHtml = r.url === '#'
+          ? '<span class="link" style="color:var(--muted)">приклад</span>'
+          : '<a class="link" href="' + r.url + '" target="_blank" rel="noopener">Відкрити →</a>';
+        tr.innerHTML =
+          '<td data-label="Майданчик">' + r.place + '</td>' +
+          '<td data-label="Ціна" class="price">' + r.price + '</td>' +
+          '<td data-label="Тип"><span class="pill ' + r.type + '">' + r.typeLabel + '</span></td>' +
+          '<td data-label="Впевненість"><span class="pill ' + r.conf + '">' + r.confLabel + '</span></td>' +
+          '<td data-label="">' + linkHtml + '</td>';
+        tb.appendChild(tr);
+      });
+    }
+
+    var steps = [
+      'Аналізуємо скриншот…',
+      'Визначаємо локацію та параметри…',
+      'Шукаємо агентства на карті та в пошуку…',
+      'Порівнюємо фото об’єкта…',
+      'Формуємо таблицю…'
+    ];
+
+    startBtn.addEventListener('click', function () {
+      if (startBtn.disabled) return;
+      var progress = document.getElementById('progress');
+      var results = document.getElementById('results');
+      var bar = document.getElementById('barfill');
+      var status = document.getElementById('status');
+
+      results.hidden = true;
+      progress.hidden = false;
+      startBtn.disabled = true;
+      startBtn.textContent = 'Шукаємо…';
+      bar.style.width = '0%';
+      progress.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+      var pct = 0;
+      var stepIdx = 0;
+      status.textContent = steps[0];
+
+      var timer = setInterval(function () {
+        pct += Math.random() * 11 + 5;
+        if (pct > 100) pct = 100;
+        bar.style.width = pct + '%';
+        var si = Math.min(steps.length - 1, Math.floor(pct / (100 / steps.length)));
+        if (si !== stepIdx) { stepIdx = si; status.textContent = steps[si]; }
+
+        if (pct >= 100) {
+          clearInterval(timer);
+          status.textContent = 'Готово — знайдено 3 оголошення';
+          renderRows();
+          setTimeout(function () {
+            results.hidden = false;
+            startBtn.disabled = false;
+            startBtn.textContent = 'Шукати ще раз';
+            results.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }, 350);
+        }
+      }, 340);
+    });
+  })();
+</script>
+</body>
+</html>

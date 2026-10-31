@@ -1,0 +1,19 @@
+[Unit]
+Description=dubl.top API (пошук дублів оголошень)
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/dubl.top
+Environment=PYTHONPATH=/opt/dubl.top
+# Увесь стан читається з .env.dubl у WorkingDirectory
+ExecStart=/opt/dubl.top/venv/bin/uvicorn dubl.main:app --host 127.0.0.1 --port 8020
+Restart=always
+RestartSec=3
+# Ізоляція від інших сайтів: окремий процес, окремий користувач.
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
