@@ -169,6 +169,34 @@ async def _resolve_slug(city: str, portal: str, client: httpx.AsyncClient) -> st
     return ""
 
 
+def _dimria_items(html: str) -> list[dict]:
+    """Дістати список карток DOM.RIA з __INITIAL_STATE__ у будь-якій формі:
+    об'єкт-літерал (= {...};) або рядок (= JSON.parse("...")).
+    """
+    if not html:
+        return []
+    # Форма 1: об'єкт-літерал.
+    st = _json_after(html, "window.__INITIAL_STATE__")
+    items = (((st or {}).get("catalog") or {}).get("realtyForCatalog")) or []
+    if items:
+        return items
+    # Форма 2: window.__INITIAL_STATE__ = JSON.parse("...")
+    m = re.search(r'__INITIAL_STATE__\s*=\s*JSON\.parse\(\s*("(?:[^"\\]|\\.)*")\s*\)', html, re.S)
+    if m:
+        try:
+            data = json.loads(json.loads(m.group(1)))
+            items = (((data or {}).get("catalog") or {}).get("realtyForCatalog")) or []
+            if items:
+                return items
+        except Exception as error:
+            print(f"dubl dimria JSON.parse decode: {type(error).__name__}", flush=True)
+    # Діагностика, якщо нічого не вийшло.
+    has = "realtyForCatalog" in html
+    print(f"dubl dimria parse fail: len={len(html)} has_state="
+          f"{'__INITIAL_STATE__' in html} has_catalog={has}", flush=True)
+    return []
+
+
 async def search_dimria(subject: dict, pages: int = 3) -> list[dict]:
     """DOM.RIA напряму: розділ продажу/оренди квартир міста → картки з JSON."""
     city = subject.get("city")
@@ -198,8 +226,7 @@ async def search_dimria(subject: dict, pages: int = 3) -> list[dict]:
             for html in htmls:
                 if not html:
                     continue
-                state = _json_after(html, "window.__INITIAL_STATE__")
-                items = (((state or {}).get("catalog") or {}).get("realtyForCatalog")) or []
+                items = _dimria_items(html)
                 for it in items:
                     got_city = it.get("city_name_uk") or it.get("cityName") or ""
                     if validated is None:
