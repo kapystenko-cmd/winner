@@ -117,7 +117,8 @@ async def _vip_pipeline(subject: dict, reference_images: list[tuple[bytes, str]]
     з посилання першоджерела). Якщо фото немає — показуємо кандидатів тільки за даними.
     """
     from dubl.portals import (search_dimria, search_olx, search_extra_portals,
-                              apply_filters, usd_rate, confirm_by_photo, match_verdict)
+                              apply_filters, usd_rate, confirm_by_photo, match_verdict,
+                              enrich_candidate_prices)
     candidates: list = []
     photo_checked = False
     stats = {"raw": 0, "filtered": 0, "photo_yes": 0, "maybe": 0}
@@ -183,6 +184,11 @@ async def _vip_pipeline(subject: dict, reference_images: list[tuple[bytes, str]]
             key=lambda c: (rank.get(c.get("verdict"), 0), (c.get("photo") or {}).get("confidence", 0)),
             reverse=True,
         )
+        # Дотягнути ціну лише для показаних (мало запитів) — там, де її немає.
+        try:
+            await enrich_candidate_prices(subject, candidates)
+        except Exception as price_error:
+            print(f"dubl vip price enrich error: {price_error}", flush=True)
         print(f"dubl vip stats: {stats} → показано {len(candidates)}", flush=True)
     except Exception as error:
         import traceback

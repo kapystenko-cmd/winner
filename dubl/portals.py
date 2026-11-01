@@ -275,13 +275,24 @@ def match_verdict(subject: dict, c: dict) -> str | None:
     return None
 
 
+_CATEGORY_MARKERS = (
+    "q-", "/list/", "/search", "/filter", "/poshuk", "/poisk",
+    "/flats-sale", "/flats-rent", "/prodazha-kvartir", "/prodaja-kvartir",
+    "/arenda-kvartir", "/orenda-kvartir", "-rooms/", "/sale/", "/rent/",
+    "/flats?", "/flats-", "-rayon-po", "/nedvizhimost", "/kvartiry", "/catalog",
+)
+
+
 def _looks_like_listing(url: str) -> bool:
-    """Відсікти сторінки пошуку/категорій (лишаємо тільки окремі оголошення)."""
-    low = (url or "").lower()
-    if any(b in low for b in ("q-", "/list/", "/search", "/filter", "/poshuk", "/poisk")):
+    """Тільки окремі оголошення (не категорії/пошук/фільтри).
+    Листинг = є маркер оголошення або довгий числовий id у шляху."""
+    low = (url or "").lower().split("?")[0]
+    if any(b in low for b in _CATEGORY_MARKERS):
         return False
-    last = low.rstrip("/").rsplit("/", 1)[-1]
-    return any(ch.isdigit() for ch in last) or "id" in last
+    if "obyavlenie" in low or low.endswith(".html"):
+        return True
+    # окреме оголошення зазвичай має довгий числовий id (6+ цифр) у шляху
+    return bool(re.search(r"\d{6,}", low))
 
 
 # ---------------------------------------------------------------- OLX
@@ -477,6 +488,90 @@ async def fetch_photos_as_images(url: str, limit: int = 8) -> list[tuple[bytes, 
     return out
 
 
+_OG_PRICE_AMOUNT_RE = _re.compile(r'og:price:amount["\'][^>]+content=["\']([\d.]+)', _re.I)
+_OG_PRICE_CUR_RE = _re.compile(r'og:price:currency["\'][^>]+content=["\']([A-Za-z]{3})', _re.I)
+_JSONLD_PRICE_RE = _re.compile(r'"price"\s*:\s*"?(\d[\d.]*)"?', _re.I)
+_JSONLD_CUR_RE = _re.compile(r'"priceCurrency"\s*:\s*"?([A-Za-z]{3})', _re.I)
+_USD_TEXT_RE = _re.compile(r'(\d[\d\s  ]{2,})\s*(?:\$|USD|дол)', _re.I)
+_UAH_TEXT_RE = _re.compile(r'(\d[\d\s  ]{4,})\s*(?:грн|₴|UAH)', _re.I)
+
+
+def _clean_amount(raw: str) -> float | None:
+    try:
+        v = float(_re.sub(r"[^\d.]", "", (raw or "").replace(",", ".").split(".")[0]) or 0)
+    except ValueError:
+        return None
+    return v if 500 <= v <= 50_000_000 else None
+
+
+def _parse_price(html: str) -> tuple[float | None, float | None]:
+    """Витягти ціну зі сторінки → (usd, uah). Пріоритет: og:price / JSON-LD / текст."""
+    usd = uah = None
+    m_amt = _OG_PRICE_AMOUNT_RE.search(html) or _JSONLD_PRICE_RE.search(html)
+    if m_amt:
+        cur_m = _OG_PRICE_CUR_RE.search(html) or _JSONLD_CUR_RE.search(html)
+        cur = (cur_m.group(1).upper() if cur_m else "")
+        val = _clean_amount(m_amt.group(1))
+        if val:
+            if cur == "USD":
+                usd = val
+            elif cur == "UAH":
+                uah = val
+            elif val < 1_000_000:  # без валюти і невелике — найімовірніше $
+                usd = val
+            else:
+                uah = val
+    if usd is None:
+        for m in _USD_TEXT_RE.finditer(html):
+            v = _clean_amount(m.group(1))
+            if v and v < 2_000_000:
+                usd = v
+                break
+    if uah is None:
+        for m in _UAH_TEXT_RE.finditer(html):
+            v = _clean_amount(m.group(1))
+            if v and v >= 100_000:
+                uah = v
+                break
+    return usd, uah
+
+
+async def enrich_candidate_prices(subject: dict, candidates: list[dict]) -> None:
+    """Дотягнути ціну зі сторінок кандидатів, у яких її немає (фінальний шорт-лист)."""
+    want_usd = str(subject.get("price_currency") or "").upper() == "USD"
+    rate = await usd_rate() if want_usd else 0.0
+    targets = [c for c in candidates if not c.get("price_uah") and not c.get("price_usd")][:8]
+    if not targets:
+        return
+
+    async def one(c: dict) -> None:
+        html = await _fetch_html(c.get("url") or "")
+        if not html:
+            return
+        usd, uah = _parse_price(html)
+        if usd and not c.get("price_usd"):
+            c["price_usd"] = round(usd)
+        if uah and not c.get("price_uah"):
+            c["price_uah"] = round(uah)
+        if want_usd and not c.get("price_usd") and c.get("price_uah") and rate:
+            try:
+                c["price_usd"] = round(float(c["price_uah"]) / rate)
+            except (TypeError, ValueError, ZeroDivisionError):
+                pass
+        print(f"dubl price {(c.get('url') or '')[:55]}: usd={c.get('price_usd')} uah={c.get('price_uah')}", flush=True)
+
+    sem = asyncio.Semaphore(4)
+
+    async def guarded(c):
+        async with sem:
+            try:
+                await one(c)
+            except Exception as error:
+                print(f"dubl price error: {error}", flush=True)
+
+    await asyncio.gather(*[guarded(c) for c in targets])
+
+
 async def confirm_by_photo(object_images: list[tuple[bytes, str]], candidate: dict) -> dict:
     """Порівняти фото об'єкта зі скриншотів і фото кандидата через Gemini."""
     if not settings.gemini_api_key:
@@ -566,28 +661,41 @@ def _parse_card_text(text: str) -> tuple[int | None, float | None, int | None]:
 
 
 async def search_extra_portals(subject: dict) -> list[dict]:
-    """Оголошення на порталах через звичайний веб-пошук (без site:), фільтр за доменом.
-    Запит по вулиці — ключ до пошуку САМЕ оригіналу. Підтвердження — по фото."""
-    from dubl.catalog import serper_search, _domain
+    """Оголошення того ж об'єкта через звичайний веб-пошук (Google/Serper).
+    Беремо і портали, і САЙТИ АГЕНТСТВ (перші органічні результати, не рекламу).
+    Запит по вулиці + площі + ціні — ключ до пошуку САМЕ цього об'єкта."""
+    from dubl.catalog import serper_search, _domain, _is_agency_domain
     city = subject.get("city") or ""
     district = subject.get("district") or ""
     street = subject.get("street") or ""
+    building = subject.get("building") or ""
     rooms = subject.get("rooms")
     deal = "оренда" if str(subject.get("deal_type")) == "rent" else "продаж"
     rooms_part = f"{rooms}-кімнатна" if rooms else ""
     loc = street or district  # вулиця — найточніше; якщо немає — район
+    street_full = (str(street) + " " + str(building)).strip() if street else ""
     area_part = ""
     try:
         if subject.get("area_sqm"):
             area_part = f"{round(float(subject['area_sqm']))} м²"
     except (TypeError, ValueError):
         pass
+    price_part = ""
+    cur = str(subject.get("price_currency") or "").upper()
+    if subject.get("price_value") and cur:
+        price_part = f"{subject['price_value']}$" if cur == "USD" else f"{subject['price_value']} грн"
 
+    # Різні формулювання — так Google віддає різні джерела (портали + агентства).
     queries = [
         " ".join(p for p in [deal, rooms_part, "квартира", city, loc, area_part] if p),
+        " ".join(p for p in [deal, rooms_part, "квартира", city, street_full or loc, price_part] if p),
+        " ".join(p for p in [rooms_part, "квартира", city, loc, area_part, price_part] if p),
         " ".join(p for p in [deal, rooms_part, "квартира", city, loc] if p),
     ]
+
     out: dict[str, dict] = {}
+    agency_count = 0
+    MAX_AGENCY = 10
     seen_q: set[str] = set()
     for query in queries:
         if not query or query in seen_q:
@@ -597,13 +705,21 @@ async def search_extra_portals(subject: dict) -> list[dict]:
         for item in organic:
             url = item.get("link") or ""
             dom = _domain(url)
+            if not url or url in out or not _looks_like_listing(url):
+                continue
             portal = next((p for p in _WANTED_PORTALS if dom == p or dom.endswith("." + p)), None)
-            if not portal or url in out or not _looks_like_listing(url):
+            if portal:
+                src = "olx" if portal == "olx.ua" else portal
+            elif _is_agency_domain(dom) and agency_count < MAX_AGENCY:
+                # сайт агентства — теж може містити той самий об'єкт
+                src = dom
+                agency_count += 1
+            else:
                 continue
             r_, a_, f_ = _parse_card_text((item.get("title") or "") + " " + (item.get("snippet") or ""))
             out[url] = {
-                "source": "olx" if portal == "olx.ua" else portal,
+                "source": src,
                 "url": url, "title": item.get("title") or "",
                 "price_uah": None, "area_sqm": a_, "rooms": r_, "floor": f_,
             }
-    return list(out.values())[:20]
+    return list(out.values())[:30]
