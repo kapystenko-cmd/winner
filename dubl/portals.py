@@ -517,7 +517,7 @@ async def search_olx(subject: dict, limit: int = 60) -> list[dict]:
     try:
         results = await find_olx_analogs(
             city, otype, subject.get("rooms"), subject.get("area_sqm"),
-            report_id="", max_pages=1, max_candidates=40, screenshots=False,
+            report_id="", max_pages=3, max_candidates=50, screenshots=False,
             district=subject.get("district"), price_min_uah=None, price_max_uah=None,
             region=subject.get("region"),
         )
