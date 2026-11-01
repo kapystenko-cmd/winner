@@ -211,9 +211,11 @@ def apply_filters(subject: dict, candidates: list[dict]) -> list[dict]:
 
 
 def match_verdict(subject: dict, c: dict) -> str | None:
-    """'original' — дані збігаються точно (той самий лістинг); 'dup' — підтверджено по фото."""
+    """Показуємо лише ТЕ, що підтверджено по ФОТО. Серед підтверджених:
+    'original' — ще й дані майже ідентичні (той самий лістинг), інакше 'dup'."""
+    if (c.get("photo") or {}).get("match") != "yes":
+        return None
     sr, cr = _as_int(subject.get("rooms")), _as_int(c.get("rooms"))
-    sf, cf = _as_int(subject.get("floor")), _as_int(c.get("floor"))
     try:
         sa = float(subject.get("area_sqm")) if subject.get("area_sqm") not in (None, "") else None
     except (TypeError, ValueError):
@@ -222,21 +224,16 @@ def match_verdict(subject: dict, c: dict) -> str | None:
         ca = float(c.get("area_sqm")) if c.get("area_sqm") not in (None, "") else None
     except (TypeError, ValueError):
         ca = None
-    exact = bool(sr and cr and sr == cr and sf and cf and sf == cf
-                 and sa and ca and abs(ca - sa) / sa <= 0.05)
+    exact = bool(sr and cr and sr == cr and sa and ca and abs(ca - sa) / sa <= 0.03)
     if exact:
         sp = subject.get("price_value")
         cp = c.get("price_usd") if str(subject.get("price_currency") or "").upper() == "USD" else c.get("price_uah")
         try:
-            if sp and cp and abs(float(cp) - float(sp)) / float(sp) > 0.10:
+            if sp and cp and abs(float(cp) - float(sp)) / float(sp) > 0.05:
                 exact = False
         except (TypeError, ValueError, ZeroDivisionError):
             pass
-    if exact:
-        return "original"
-    if (c.get("photo") or {}).get("match") == "yes":
-        return "dup"
-    return None
+    return "original" if exact else "dup"
 
 
 def _looks_like_listing(url: str) -> bool:
@@ -419,6 +416,7 @@ async def confirm_by_photo(object_images: list[tuple[bytes, str]], candidate: di
             content.append({"mime_type": d[1], "data": d[0]})
             got += 1
     if got == 0:
+        print(f"dubl photo {(candidate.get('url') or '')[:70]}: 0 фото скачано", flush=True)
         return {"match": "no_photos", "confidence": 0, "matched": 0}
 
     try:
@@ -430,8 +428,9 @@ async def confirm_by_photo(object_images: list[tuple[bytes, str]], candidate: di
         data = _parse_model_json(resp.text)
         matched = int(data.get("matched_photos") or 0)
         conf = float(data.get("confidence") or 0)
-        # Строго: дубль лише якщо Gemini каже "так" + ≥2 збіги фото + висока впевненість.
-        same = bool(data.get("same_object")) and matched >= 2 and conf >= 0.7
+        same = bool(data.get("same_object")) and conf >= 0.6
+        print(f"dubl photo {(candidate.get('url') or '')[:60]}: got={got} "
+              f"same={data.get('same_object')} matched={matched} conf={conf}", flush=True)
         return {
             "match": "yes" if same else "no",
             "confidence": conf,
