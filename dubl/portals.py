@@ -83,13 +83,9 @@ def _city_matches(requested: str | None, got: str | None) -> bool:
     return bool(stem) and (stem in _key(got) or _city_stem(got) in _key(requested))
 
 
-def _json_after(html: str, marker: str) -> dict | None:
-    """Витягти JSON-об'єкт одразу після marker (з коректним балансом дужок)."""
-    i = html.find(marker)
-    if i < 0:
-        return None
-    i = html.find("{", i)
-    if i < 0:
+def _brace_match(html: str, i: int) -> str | None:
+    """Повернути підрядок {…} зі збалансованими дужками, починаючи з позиції i."""
+    if i >= len(html) or html[i] != "{":
         return None
     depth, instr, esc = 0, False, False
     for j in range(i, len(html)):
@@ -108,10 +104,7 @@ def _json_after(html: str, marker: str) -> dict | None:
         elif ch == "}":
             depth -= 1
             if depth == 0:
-                try:
-                    return json.loads(html[i:j + 1])
-                except Exception:
-                    return None
+                return html[i:j + 1]
     return None
 
 
@@ -170,30 +163,39 @@ async def _resolve_slug(city: str, portal: str, client: httpx.AsyncClient) -> st
 
 
 def _dimria_items(html: str) -> list[dict]:
-    """Дістати список карток DOM.RIA з __INITIAL_STATE__ у будь-якій формі:
-    об'єкт-літерал (= {...};) або рядок (= JSON.parse("...")).
-    """
+    """Дістати список карток DOM.RIA з __INITIAL_STATE__. Перебираємо ВСІ
+    присвоєння window.__INITIAL_STATE__ = … (бо ім'я трапляється і в іншому
+    контексті) та обидві форми: об'єкт-літерал і JSON.parse("…")."""
     if not html:
         return []
-    # Форма 1: об'єкт-літерал.
-    st = _json_after(html, "window.__INITIAL_STATE__")
-    items = (((st or {}).get("catalog") or {}).get("realtyForCatalog")) or []
-    if items:
-        return items
-    # Форма 2: window.__INITIAL_STATE__ = JSON.parse("...")
-    m = re.search(r'__INITIAL_STATE__\s*=\s*JSON\.parse\(\s*("(?:[^"\\]|\\.)*")\s*\)', html, re.S)
-    if m:
-        try:
-            data = json.loads(json.loads(m.group(1)))
+    snippet = ""
+    for m in re.finditer(r'window\.__INITIAL_STATE__\s*=\s*', html):
+        pos = m.end()
+        rest = html[pos:pos + 12]
+        if not snippet:
+            snippet = html[pos:pos + 60].replace("\n", " ")
+        data = None
+        if rest.lstrip().startswith("JSON.parse"):
+            mm = re.match(r'\s*JSON\.parse\(\s*("(?:[^"\\]|\\.)*")\s*\)', html[pos:pos + 2_000_000], re.S)
+            if mm:
+                try:
+                    data = json.loads(json.loads(mm.group(1)))
+                except Exception:
+                    data = None
+        elif rest.lstrip()[:1] == "{":
+            start = pos + (len(rest) - len(rest.lstrip()))
+            braced = _brace_match(html, start)
+            if braced:
+                try:
+                    data = json.loads(braced)
+                except Exception:
+                    data = None
+        if data:
             items = (((data or {}).get("catalog") or {}).get("realtyForCatalog")) or []
             if items:
                 return items
-        except Exception as error:
-            print(f"dubl dimria JSON.parse decode: {type(error).__name__}", flush=True)
-    # Діагностика, якщо нічого не вийшло.
-    has = "realtyForCatalog" in html
-    print(f"dubl dimria parse fail: len={len(html)} has_state="
-          f"{'__INITIAL_STATE__' in html} has_catalog={has}", flush=True)
+    print(f"dubl dimria parse fail: len={len(html)} "
+          f"has_catalog={'realtyForCatalog' in html} snippet={snippet!r}", flush=True)
     return []
 
 
