@@ -83,9 +83,10 @@ def _city_matches(requested: str | None, got: str | None) -> bool:
     return bool(stem) and (stem in _key(got) or _city_stem(got) in _key(requested))
 
 
-def _brace_match(html: str, i: int) -> str | None:
-    """Повернути підрядок {…} зі збалансованими дужками, починаючи з позиції i."""
-    if i >= len(html) or html[i] != "{":
+def _balanced(html: str, i: int) -> str | None:
+    """Збалансований підрядок, що починається на html[i] (дужка { або [).
+    Рахує і {}, і [] разом, поважаючи рядки — для масивів об'єктів."""
+    if i < 0 or i >= len(html) or html[i] not in "[{":
         return None
     depth, instr, esc = 0, False, False
     for j in range(i, len(html)):
@@ -99,9 +100,9 @@ def _brace_match(html: str, i: int) -> str | None:
                 instr = False
         elif ch == '"':
             instr = True
-        elif ch == "{":
+        elif ch in "[{":
             depth += 1
-        elif ch == "}":
+        elif ch in "]}":
             depth -= 1
             if depth == 0:
                 return html[i:j + 1]
@@ -163,39 +164,26 @@ async def _resolve_slug(city: str, portal: str, client: httpx.AsyncClient) -> st
 
 
 def _dimria_items(html: str) -> list[dict]:
-    """Дістати список карток DOM.RIA з __INITIAL_STATE__. Перебираємо ВСІ
-    присвоєння window.__INITIAL_STATE__ = … (бо ім'я трапляється і в іншому
-    контексті) та обидві форми: об'єкт-літерал і JSON.parse("…")."""
+    """Дістати картки DOM.RIA. Весь __INITIAL_STATE__ (≈780КБ) часто не є
+    валідним JSON (трапляються JS-токени), тож беремо ЛИШЕ масив
+    "realtyForCatalog":[…] — дані оголошень чисті й парсяться завжди."""
     if not html:
         return []
-    snippet = ""
-    for m in re.finditer(r'window\.__INITIAL_STATE__\s*=\s*', html):
-        pos = m.end()
-        rest = html[pos:pos + 12]
-        if not snippet:
-            snippet = html[pos:pos + 60].replace("\n", " ")
-        data = None
-        if rest.lstrip().startswith("JSON.parse"):
-            mm = re.match(r'\s*JSON\.parse\(\s*("(?:[^"\\]|\\.)*")\s*\)', html[pos:pos + 2_000_000], re.S)
-            if mm:
-                try:
-                    data = json.loads(json.loads(mm.group(1)))
-                except Exception:
-                    data = None
-        elif rest.lstrip()[:1] == "{":
-            start = pos + (len(rest) - len(rest.lstrip()))
-            braced = _brace_match(html, start)
-            if braced:
-                try:
-                    data = json.loads(braced)
-                except Exception:
-                    data = None
-        if data:
-            items = (((data or {}).get("catalog") or {}).get("realtyForCatalog")) or []
-            if items:
+    for m in re.finditer(r'"realtyForCatalog"\s*:\s*', html):
+        lb = m.end()
+        if lb < len(html) and html[lb] == "[":
+            arr = _balanced(html, lb)
+            if not arr:
+                continue
+            try:
+                items = json.loads(arr)
+            except Exception:
+                continue
+            if (isinstance(items, list) and items and isinstance(items[0], dict)
+                    and ("beautiful_url" in items[0] or "rooms_count" in items[0])):
                 return items
     print(f"dubl dimria parse fail: len={len(html)} "
-          f"has_catalog={'realtyForCatalog' in html} snippet={snippet!r}", flush=True)
+          f"has_catalog={'realtyForCatalog' in html}", flush=True)
     return []
 
 
@@ -529,7 +517,7 @@ async def search_olx(subject: dict, limit: int = 60) -> list[dict]:
     try:
         results = await find_olx_analogs(
             city, otype, subject.get("rooms"), subject.get("area_sqm"),
-            report_id="", max_pages=3, max_candidates=limit, screenshots=False,
+            report_id="", max_pages=1, max_candidates=40, screenshots=False,
             district=subject.get("district"), price_min_uah=None, price_max_uah=None,
             region=subject.get("region"),
         )
@@ -588,7 +576,7 @@ async def _fetch_html(url: str) -> str:
             async with httpx.AsyncClient(timeout=45) as client:
                 r = await client.get("https://api.zenrows.com/v1/", params={
                     "apikey": settings.zenrows_api_key, "url": url,
-                    "js_render": "true", "wait": 3000,
+                    "js_render": "true", "wait": 1500,
                 })
                 r.raise_for_status()
                 return r.text
