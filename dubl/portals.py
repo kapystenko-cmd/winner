@@ -210,11 +210,17 @@ def apply_filters(subject: dict, candidates: list[dict]) -> list[dict]:
     return out
 
 
-def match_verdict(subject: dict, c: dict) -> str | None:
-    """Показуємо лише ТЕ, що підтверджено по ФОТО. Серед підтверджених:
-    'original' — ще й дані майже ідентичні (той самий лістинг), інакше 'dup'."""
-    if (c.get("photo") or {}).get("match") != "yes":
-        return None
+def _street_key(value) -> str:
+    v = str(value or "").casefold()
+    v = re.sub(r"\b(вул(иця)?|просп(ект)?|пров(улок)?|бульв(ар)?|наб(ережна)?|пл(оща)?|"
+               r"ул(ица)?|пер(еулок)?|street|st|ave)\b\.?", "", v)
+    v = re.sub(r"[^a-zа-яіїєґ0-9 ]+", " ", v)
+    return re.sub(r"\s+", " ", v).strip()
+
+
+def _data_strength(subject: dict, c: dict) -> str:
+    """Наскільки СИЛЬНО збігаються ДАНІ (без фото): 'exact' | 'strong' | 'weak'.
+    exact — той самий лістинг; strong — дуже ймовірно той самий об'єкт."""
     sr, cr = _as_int(subject.get("rooms")), _as_int(c.get("rooms"))
     try:
         sa = float(subject.get("area_sqm")) if subject.get("area_sqm") not in (None, "") else None
@@ -224,16 +230,49 @@ def match_verdict(subject: dict, c: dict) -> str | None:
         ca = float(c.get("area_sqm")) if c.get("area_sqm") not in (None, "") else None
     except (TypeError, ValueError):
         ca = None
-    exact = bool(sr and cr and sr == cr and sa and ca and abs(ca - sa) / sa <= 0.03)
-    if exact:
-        sp = subject.get("price_value")
-        cp = c.get("price_usd") if str(subject.get("price_currency") or "").upper() == "USD" else c.get("price_uah")
-        try:
-            if sp and cp and abs(float(cp) - float(sp)) / float(sp) > 0.05:
-                exact = False
-        except (TypeError, ValueError, ZeroDivisionError):
-            pass
-    return "original" if exact else "dup"
+    area_near = bool(sa and ca and abs(ca - sa) / sa <= 0.03)
+    rooms_ok = bool(sr and cr and sr == cr)
+
+    # ціна
+    sp = subject.get("price_value")
+    cp = c.get("price_usd") if str(subject.get("price_currency") or "").upper() == "USD" else c.get("price_uah")
+    price_near = None
+    try:
+        if sp and cp:
+            price_near = abs(float(cp) - float(sp)) / float(sp) <= 0.05
+    except (TypeError, ValueError, ZeroDivisionError):
+        price_near = None
+
+    # вулиця
+    s_str, c_str = _street_key(subject.get("street")), _street_key(c.get("street") or c.get("address"))
+    street_ok = bool(s_str and c_str and (s_str in c_str or c_str in s_str))
+
+    if rooms_ok and area_near and price_near is True:
+        return "exact"
+    if (rooms_ok and area_near and (street_ok or price_near is True)) or (street_ok and area_near):
+        return "strong"
+    return "weak"
+
+
+def match_verdict(subject: dict, c: dict) -> str | None:
+    """Вердикт по кандидату:
+      • 'original' — підтверджено по фото ТА дані ідентичні (той самий лістинг);
+      • 'dup'      — підтверджено по фото (той самий об'єкт);
+      • 'maybe'    — фото звірити не вдалося, але ДАНІ сильно збігаються
+                     (та сама вулиця або площа+ціна) → ймовірний дубль за даними;
+      • None       — фото сказало «інший об'єкт», або дані збігаються слабо.
+    """
+    photo = (c.get("photo") or {}).get("match")
+    strength = _data_strength(subject, c)
+    if photo == "yes":
+        return "original" if strength == "exact" else "dup"
+    if photo == "no":
+        return None  # Gemini явно сказав: інший об'єкт
+    # Фото не вдалося перевірити (no_photos / error / no_key).
+    # Показуємо лише СИЛЬНІ збіги за даними, щоб не засмічувати таблицю.
+    if strength in ("exact", "strong"):
+        return "maybe"
+    return None
 
 
 def _looks_like_listing(url: str) -> bool:

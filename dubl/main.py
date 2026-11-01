@@ -120,6 +120,7 @@ async def _vip_pipeline(subject: dict, reference_images: list[tuple[bytes, str]]
                               apply_filters, usd_rate, confirm_by_photo, match_verdict)
     candidates: list = []
     photo_checked = False
+    stats = {"raw": 0, "filtered": 0, "photo_yes": 0, "maybe": 0}
     try:
         parts = await asyncio.gather(
             search_dimria(subject), search_olx(subject), search_extra_portals(subject),
@@ -130,7 +131,9 @@ async def _vip_pipeline(subject: dict, reference_images: list[tuple[bytes, str]]
             if isinstance(part, Exception):
                 print(f"dubl vip source {name} failed: {type(part).__name__}: {part}", flush=True)
             elif isinstance(part, list):
+                print(f"dubl vip source {name}: {len(part)} кандидатів", flush=True)
                 raw += part
+        stats["raw"] = len(raw)
         candidates = apply_filters(subject, raw)
 
         # дедуп по url
@@ -142,6 +145,7 @@ async def _vip_pipeline(subject: dict, reference_images: list[tuple[bytes, str]]
             seen.add(u)
             uniq.append(c)
         candidates = uniq
+        stats["filtered"] = len(candidates)
 
         # Якщо об'єкт у доларах — показуємо ціни кандидатів теж у $.
         if str(subject.get("price_currency") or "").upper() == "USD":
@@ -153,7 +157,7 @@ async def _vip_pipeline(subject: dict, reference_images: list[tuple[bytes, str]]
                     except (TypeError, ValueError):
                         pass
 
-        # M3: підтвердження по фото — лише коли є еталонні фото об'єкта.
+        # M3: підтвердження по фото — коли є еталонні фото об'єкта.
         if candidates and reference_images:
             photo_checked = True
             semaphore = asyncio.Semaphore(4)
@@ -166,30 +170,36 @@ async def _vip_pipeline(subject: dict, reference_images: list[tuple[bytes, str]]
                         print(f"dubl vip confirm failed: {photo_error}", flush=True)
                         c["photo"] = {"match": "error", "confidence": 0, "matched": 0}
 
-            await asyncio.gather(*[_confirm(c) for c in candidates[:10]])
-            for c in candidates:
-                c["verdict"] = match_verdict(subject, c)
-            candidates = [c for c in candidates if c.get("verdict")]
-            candidates.sort(
-                key=lambda c: (c.get("verdict") == "original", (c.get("photo") or {}).get("confidence", 0)),
-                reverse=True,
-            )
+            await asyncio.gather(*[_confirm(c) for c in candidates[:14]])
+
+        # Вердикт для всіх (і коли фото не перевіряли — за силою даних).
+        for c in candidates:
+            c["verdict"] = match_verdict(subject, c)
+        stats["photo_yes"] = sum(1 for c in candidates if (c.get("photo") or {}).get("match") == "yes")
+        candidates = [c for c in candidates if c.get("verdict")]
+        stats["maybe"] = sum(1 for c in candidates if c.get("verdict") == "maybe")
+        rank = {"original": 3, "dup": 2, "maybe": 1}
+        candidates.sort(
+            key=lambda c: (rank.get(c.get("verdict"), 0), (c.get("photo") or {}).get("confidence", 0)),
+            reverse=True,
+        )
+        print(f"dubl vip stats: {stats} → показано {len(candidates)}", flush=True)
     except Exception as error:
         import traceback
         print("dubl vip search error:\n" + traceback.format_exc(), flush=True)
 
-    if photo_checked:
-        note = ("«оригінал ✓» — той самий лістинг (дані збіглися точно); "
-                "«той самий ✓» — підтверджено по фото. Решту відсіяно.")
-    else:
-        note = ("Фото об'єкта не було — показано збіги ЗА ДАНИМИ (місто, кімнати, "
-                "поверх, площа ±10%). Для підтвердження по фото додай посилання на "
-                "оголошення в текст або завантаж скриншоти.")
+    note = ("«оригінал ✓» — той самий лістинг; «той самий ✓» — підтверджено по фото; "
+            "«за даними» — фото звірити не вдалось, але збіг за адресою/площею/ціною. ")
+    if not photo_checked:
+        note += "Фото об'єкта не було — показано сильні збіги за даними. "
+    note += (f"(знайдено {stats['raw']}, після фільтра {stats['filtered']}, "
+             f"по фото {stats['photo_yes']}, за даними {stats['maybe']})")
     return {
         "subject": subject,
         "count": len(candidates),
         "candidates": candidates,
         "photo_checked": photo_checked,
+        "stats": stats,
         "note": note,
     }
 
