@@ -212,28 +212,50 @@ async def vip_search(files: list[UploadFile] = File(...)) -> dict:
 
 
 @app.post("/api/vip/search-text")
-async def vip_search_text(text: str = Form(...)) -> dict:
-    """VIP: пошук дублів за ПОВНИМ ТЕКСТОМ оголошення.
+async def vip_search_text(text: str = Form(""), url: str = Form("")) -> dict:
+    """VIP: пошук дублів за ПОСИЛАННЯМ і/або ТЕКСТОМ оголошення.
 
-    Gemini читає текст → параметри + посилання на першоджерело (якщо є).
-    Якщо посилання є — підтягуємо його фото як еталон і звіряємо дублі по фото.
+    • Є посилання → підтягуємо з нього текст (якщо свого мало) і ВСІ фото як
+      еталон, звіряємо дублі по фото.
+    • Тільки текст → читаємо параметри, шукаємо за даними (+ фото, якщо в тексті
+      трапиться посилання).
     """
-    text = (text or "").strip()
-    if len(text) < 15:
-        raise HTTPException(status_code=400, detail="Встав повний текст оголошення (мінімум кілька рядків)")
     from dubl.extract import extract_subject_from_text
+    from dubl.portals import fetch_photos_as_images, fetch_listing_text
+
+    text = (text or "").strip()
+    url = (url or "").strip()
+    if not text and not url:
+        raise HTTPException(status_code=400, detail="Встав посилання або текст оголошення")
+    if url and not (url.startswith("http://") or url.startswith("https://")):
+        url = "https://" + url
+
+    # Якщо дали посилання, а тексту мало — дочитуємо текст зі сторінки оголошення.
+    if url and len(text) < 40:
+        try:
+            page_text = await fetch_listing_text(url)
+        except Exception as error:
+            print(f"dubl vip link text error: {error}", flush=True)
+            page_text = ""
+        text = (text + "\n" + page_text).strip()
+
+    if len(text) < 15 and not url:
+        raise HTTPException(status_code=400, detail="Замало даних для пошуку")
+
     try:
-        subject = await extract_subject_from_text(text)
+        subject = await extract_subject_from_text(text or url)
     except RuntimeError as error:
         raise HTTPException(status_code=503, detail=str(error))
     except Exception as error:
         print(f"dubl vip text extract error: {error}", flush=True)
-        raise HTTPException(status_code=502, detail="Не вдалося прочитати текст оголошення")
+        raise HTTPException(status_code=502, detail="Не вдалося прочитати оголошення")
+
+    # Пряме посилання з поля має пріоритет над знайденим у тексті.
+    src = url or subject.get("source_url")
+    subject["source_url"] = src or None
 
     reference_images: list[tuple[bytes, str]] = []
-    src = subject.get("source_url")
     if src:
-        from dubl.portals import fetch_photos_as_images
         try:
             reference_images = await fetch_photos_as_images(src, limit=8)
         except Exception as error:

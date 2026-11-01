@@ -392,6 +392,33 @@ async def _download_image(url: str, client: httpx.AsyncClient):
         return None
 
 
+_TAG_RE = _re.compile(r"<[^>]+>")
+_WS_RE = _re.compile(r"\s+")
+_SCRIPT_RE = _re.compile(r"<(script|style|noscript)[^>]*>.*?</\1>", _re.I | _re.S)
+
+
+async def fetch_listing_text(url: str, limit: int = 6000) -> str:
+    """Підтягнути читабельний текст сторінки оголошення (для режиму «за посиланням»)."""
+    html = await _fetch_html(url)
+    if not html:
+        return ""
+    body = html
+    # беремо пріоритетно og:title/og:description — вони чисті й містять суть
+    head_bits: list[str] = []
+    for prop in ("og:title", "og:description", "description"):
+        m = _re.search(
+            r'<meta[^>]+(?:property|name)=["\']' + prop + r'["\'][^>]+content=["\']([^"\']+)',
+            html, _re.I,
+        )
+        if m:
+            head_bits.append(m.group(1))
+    body = _SCRIPT_RE.sub(" ", body)
+    body = _TAG_RE.sub(" ", body)
+    body = _WS_RE.sub(" ", body).strip()
+    text = (" ".join(head_bits) + "\n" + body).strip()
+    return text[:limit]
+
+
 async def fetch_photos_as_images(url: str, limit: int = 8) -> list[tuple[bytes, str]]:
     """Підтягнути фото з посилання на оголошення і завантажити їх у байти.
 
