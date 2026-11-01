@@ -115,13 +115,31 @@ def _json_after(html: str, marker: str) -> dict | None:
     return None
 
 
-async def _get_text(url: str, client: httpx.AsyncClient) -> str:
+async def _get_text(url: str, client: httpx.AsyncClient, marker: str = "") -> str:
+    """Отримати HTML розділу порталу. Спершу звичайний GET; якщо заблоковано
+    (не 200 / немає маркера даних) — запасний шлях через ZenRows (без js_render,
+    бо дані вже в SSR). На сервері прямий GET часто ріжуть — ZenRows рятує."""
     try:
         r = await client.get(url, follow_redirects=True)
-        if r.status_code == 200:
+        if r.status_code == 200 and (not marker or marker in r.text):
             return r.text
+        print(f"dubl portal plain {url[:55]} status={r.status_code} "
+              f"marker={'y' if (marker and marker in (r.text or '')) else 'n'}", flush=True)
     except Exception as error:
-        print(f"dubl portal get {url[:60]}: {type(error).__name__}", flush=True)
+        print(f"dubl portal get {url[:55]}: {type(error).__name__}", flush=True)
+    if settings.zenrows_api_key:
+        try:
+            async with httpx.AsyncClient(timeout=50) as zc:
+                r = await zc.get("https://api.zenrows.com/v1/", params={
+                    "apikey": settings.zenrows_api_key, "url": url,
+                })
+                if r.status_code == 200 and (not marker or marker in r.text):
+                    print(f"dubl portal zenrows OK {url[:55]}", flush=True)
+                    return r.text
+                print(f"dubl portal zenrows {url[:50]} status={r.status_code} "
+                      f"marker={'y' if (marker and marker in (r.text or '')) else 'n'}", flush=True)
+        except Exception as error:
+            print(f"dubl portal zenrows {url[:50]}: {type(error).__name__}: {error}", flush=True)
     return ""
 
 
@@ -172,7 +190,8 @@ async def search_dimria(subject: dict, pages: int = 3) -> list[dict]:
                 return []
             base = f"https://dom.ria.com/uk/{deal}/{slug}/"
             htmls = await asyncio.gather(*[
-                _get_text(base if p == 1 else base + f"?page={p}", client)
+                _get_text(base if p == 1 else base + f"?page={p}", client,
+                          marker="__INITIAL_STATE__")
                 for p in range(1, pages + 1)
             ])
             validated = None
@@ -211,7 +230,9 @@ async def search_dimria(subject: dict, pages: int = 3) -> list[dict]:
     except Exception as error:
         print(f"dubl dimria error: {type(error).__name__}: {error}", flush=True)
         return []
-    return _tighten(out, rooms, area)
+    tightened = _tighten(out, rooms, area)
+    print(f"dubl dimria {slug}/{deal}: усього {len(out)} → після фільтра {len(tightened)}", flush=True)
+    return tightened
 
 
 _RI_FLOOR_RE = re.compile(r'поверх\s*(\d{1,2})\s*з\s*\d{1,2}', re.I)
@@ -240,7 +261,7 @@ async def search_rieltor(subject: dict) -> list[dict]:
                 return []
             room_path = f"{rooms}-rooms/" if rooms else ""
             url = f"https://rieltor.ua/{slug}/{deal}/{room_path}"
-            html = await _get_text(url, client)
+            html = await _get_text(url, client, marker=f"/{deal}/view/")
             if not html:
                 return []
             # Звірка міста: більшість карток мають слаг саме цього міста.
@@ -287,7 +308,9 @@ async def search_rieltor(subject: dict) -> list[dict]:
     except Exception as error:
         print(f"dubl rieltor error: {type(error).__name__}: {error}", flush=True)
         return []
-    return _tighten(out, rooms, area)
+    tightened = _tighten(out, rooms, area)
+    print(f"dubl rieltor {slug}/{deal}: усього {len(out)} → після фільтра {len(tightened)}", flush=True)
+    return tightened
 
 
 def _tighten(items: list[dict], rooms: int | None, area: float | None) -> list[dict]:
