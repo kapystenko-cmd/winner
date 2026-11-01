@@ -42,6 +42,33 @@ LISTING_PROMPT = """Ти аналізуєш кілька скриншотів (1
 Поверни ТІЛЬКИ валідний JSON із цими полями."""
 
 
+TEXT_PROMPT = """Ти читаєш ПОВНИЙ ТЕКСТ одного оголошення про нерухомість в Україні (скопійований рядок/опис з OLX, DIM.RIA, rieltor.ua, сайту агентства тощо). Текст може містити посилання на це оголошення.
+Витягни ТІЛЬКИ те, що реально є в тексті. Нічого не вигадуй: якщо значення немає — став null.
+
+Поля (поверни рівно цей JSON, без markdown і без пояснень):
+- object_type: один з "apartment", "house", "land", "commercial" або null.
+- deal_type: "sale" (продаж) або "rent" (оренда) — визнач АВТОМАТИЧНО: "оренда"/"здам"/"зняти"/ціна за місяць → rent; "продаж"/"продам"/"продається" → sale; null якщо незрозуміло.
+- city: населений пункт без "м.", або null.
+- region: область, або null.
+- district: район міста чи області, або null.
+- street: вулиця, або null.
+- building: номер будинку, або null.
+- rooms: кількість кімнат, ціле, або null.
+- area_sqm: загальна площа в м², число (54.9, не "54,9 кв.м"), або null.
+- floor: поверх, ціле, або null.
+- total_floors: поверховість будинку, ціле, або null.
+- price_value: ціна числом без пробілів і валюти, або null.
+- price_currency: "USD", "UAH" або null.
+- seller_type: "owner" якщо приватна особа/власник; "agency" якщо агентство; інакше null.
+- agency_name: назва агентства, якщо згадана; інакше null.
+- phone: номер телефону, якщо є; інакше null.
+- description_excerpt: короткий фрагмент опису (до 200 символів), або null.
+- source_url: ПРЯМЕ посилання (http/https) на САМЕ це оголошення, якщо воно є в тексті; інакше null.
+- confidence: 0..1 — наскільки впевнено прочитано основні параметри.
+
+Поверни ТІЛЬКИ валідний JSON із цими полями."""
+
+
 def _parse_model_json(text: str) -> dict:
     """Дістати один JSON-об'єкт з відповіді моделі, не приймаючи прозу."""
     text = (text or "").strip()
@@ -103,4 +130,38 @@ async def extract_subject(images: list[tuple[bytes, str]]) -> dict:
     subject = _parse_model_json(response.text)
     # Не додаємо жодних позначок провайдера/ІІ у відповідь — користувач їх не бачить.
     subject.pop("_provider", None)
+    return subject
+
+
+async def extract_subject_from_text(text: str) -> dict:
+    """Повертає параметри об'єкта з ПОВНОГО ТЕКСТУ оголошення через Gemini.
+
+    Текст може містити посилання на оголошення — тоді повертаємо його у source_url,
+    щоб потім підтягнути фото першоджерела для порівняння по фото.
+    """
+    if not settings.gemini_api_key:
+        raise RuntimeError("GEMINI_API_KEY не налаштовано в .env.dubl")
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("Порожній текст оголошення")
+
+    genai.configure(api_key=settings.gemini_api_key)
+    model = genai.GenerativeModel(settings.gemini_model)
+
+    response = await asyncio.wait_for(
+        asyncio.to_thread(
+            model.generate_content,
+            [TEXT_PROMPT, "\n\nТЕКСТ ОГОЛОШЕННЯ:\n" + text[:8000]],
+            request_options={"timeout": settings.gemini_timeout_seconds},
+        ),
+        timeout=settings.gemini_timeout_seconds + 10,
+    )
+    subject = _parse_model_json(response.text)
+    subject.pop("_provider", None)
+    # Підстрахуємося: якщо модель не дала source_url, знайдемо посилання в тексті самі.
+    if not subject.get("source_url"):
+        import re as _re
+        m = _re.search(r'https?://[^\s"\'<>)\]]+', text)
+        if m:
+            subject["source_url"] = m.group(0).rstrip(".,;")
     return subject

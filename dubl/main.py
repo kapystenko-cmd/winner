@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from dubl.config import settings
@@ -111,23 +111,15 @@ async def _read_uploads(files: list[UploadFile]) -> list[tuple[bytes, str]]:
     return images
 
 
-@app.post("/api/vip/search")
-async def vip_search(files: list[UploadFile] = File(...)) -> dict:
-    """VIP: пошук дублів по порталах. Етап 1 — DOM.RIA за даними."""
-    if not files:
-        raise HTTPException(status_code=400, detail="Не передано жодного скриншота")
-    images = await _read_uploads(files)
-    try:
-        subject = await extract_subject(images)
-    except RuntimeError as error:
-        raise HTTPException(status_code=503, detail=str(error))
-    except Exception as error:
-        print(f"dubl vip extract error: {error}", flush=True)
-        raise HTTPException(status_code=502, detail="Не вдалося проаналізувати скриншот")
-
+async def _vip_pipeline(subject: dict, reference_images: list[tuple[bytes, str]] | None) -> dict:
+    """Спільне ядро VIP-пошуку: портали за даними → (за наявності еталонних фото)
+    підтвердження по фото. reference_images — фото об'єкта (скриншоти або підтягнуті
+    з посилання першоджерела). Якщо фото немає — показуємо кандидатів тільки за даними.
+    """
     from dubl.portals import (search_dimria, search_olx, search_extra_portals,
                               apply_filters, usd_rate, confirm_by_photo, match_verdict)
     candidates: list = []
+    photo_checked = False
     try:
         parts = await asyncio.gather(
             search_dimria(subject), search_olx(subject), search_extra_portals(subject),
@@ -161,14 +153,15 @@ async def vip_search(files: list[UploadFile] = File(...)) -> dict:
                     except (TypeError, ValueError):
                         pass
 
-        # M3: підтвердження по фото (на шорт-листі після строгого фільтра).
-        if candidates:
+        # M3: підтвердження по фото — лише коли є еталонні фото об'єкта.
+        if candidates and reference_images:
+            photo_checked = True
             semaphore = asyncio.Semaphore(4)
 
             async def _confirm(c):
                 async with semaphore:
                     try:
-                        c["photo"] = await confirm_by_photo(images, c)
+                        c["photo"] = await confirm_by_photo(reference_images, c)
                     except Exception as photo_error:
                         print(f"dubl vip confirm failed: {photo_error}", flush=True)
                         c["photo"] = {"match": "error", "confidence": 0, "matched": 0}
@@ -185,10 +178,70 @@ async def vip_search(files: list[UploadFile] = File(...)) -> dict:
         import traceback
         print("dubl vip search error:\n" + traceback.format_exc(), flush=True)
 
+    if photo_checked:
+        note = ("«оригінал ✓» — той самий лістинг (дані збіглися точно); "
+                "«той самий ✓» — підтверджено по фото. Решту відсіяно.")
+    else:
+        note = ("Фото об'єкта не було — показано збіги ЗА ДАНИМИ (місто, кімнати, "
+                "поверх, площа ±10%). Для підтвердження по фото додай посилання на "
+                "оголошення в текст або завантаж скриншоти.")
     return {
         "subject": subject,
         "count": len(candidates),
         "candidates": candidates,
-        "note": "«оригінал ✓» — той самий лістинг (дані збіглися точно); "
-                "«той самий ✓» — підтверджено по фото. Решту відсіяно.",
+        "photo_checked": photo_checked,
+        "note": note,
     }
+
+
+@app.post("/api/vip/search")
+async def vip_search(files: list[UploadFile] = File(...)) -> dict:
+    """VIP: пошук дублів по порталах за скриншотами (дані + фото)."""
+    if not files:
+        raise HTTPException(status_code=400, detail="Не передано жодного скриншота")
+    images = await _read_uploads(files)
+    try:
+        subject = await extract_subject(images)
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error))
+    except Exception as error:
+        print(f"dubl vip extract error: {error}", flush=True)
+        raise HTTPException(status_code=502, detail="Не вдалося проаналізувати скриншот")
+
+    return await _vip_pipeline(subject, images)
+
+
+@app.post("/api/vip/search-text")
+async def vip_search_text(text: str = Form(...)) -> dict:
+    """VIP: пошук дублів за ПОВНИМ ТЕКСТОМ оголошення.
+
+    Gemini читає текст → параметри + посилання на першоджерело (якщо є).
+    Якщо посилання є — підтягуємо його фото як еталон і звіряємо дублі по фото.
+    """
+    text = (text or "").strip()
+    if len(text) < 15:
+        raise HTTPException(status_code=400, detail="Встав повний текст оголошення (мінімум кілька рядків)")
+    from dubl.extract import extract_subject_from_text
+    try:
+        subject = await extract_subject_from_text(text)
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error))
+    except Exception as error:
+        print(f"dubl vip text extract error: {error}", flush=True)
+        raise HTTPException(status_code=502, detail="Не вдалося прочитати текст оголошення")
+
+    reference_images: list[tuple[bytes, str]] = []
+    src = subject.get("source_url")
+    if src:
+        from dubl.portals import fetch_photos_as_images
+        try:
+            reference_images = await fetch_photos_as_images(src, limit=8)
+        except Exception as error:
+            print(f"dubl vip text ref photos error: {error}", flush=True)
+
+    result = await _vip_pipeline(subject, reference_images or None)
+    result["source_url"] = src or None
+    if src and not reference_images:
+        result["note"] = ("Не вдалося підтягнути фото з посилання — показано збіги "
+                          "ЗА ДАНИМИ. " + result["note"])
+    return result

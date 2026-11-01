@@ -392,6 +392,25 @@ async def _download_image(url: str, client: httpx.AsyncClient):
         return None
 
 
+async def fetch_photos_as_images(url: str, limit: int = 8) -> list[tuple[bytes, str]]:
+    """Підтягнути фото з посилання на оголошення і завантажити їх у байти.
+
+    Використовуємо як «еталонні фото об'єкта», коли користувач дав не скриншоти,
+    а текст оголошення з посиланням (режим пошуку за текстом).
+    """
+    photos = await fetch_listing_photos(url, limit=limit)
+    if not photos:
+        return []
+    out: list[tuple[bytes, str]] = []
+    async with httpx.AsyncClient() as client:
+        downloaded = await asyncio.gather(*[_download_image(u, client) for u in photos])
+    for d in downloaded:
+        if d:
+            out.append((d[0], d[1]))
+    print(f"dubl ref photos {url[:60]}: fetched={len(photos)} downloaded={len(out)}", flush=True)
+    return out
+
+
 async def confirm_by_photo(object_images: list[tuple[bytes, str]], candidate: dict) -> dict:
     """Порівняти фото об'єкта зі скриншотів і фото кандидата через Gemini."""
     if not settings.gemini_api_key:

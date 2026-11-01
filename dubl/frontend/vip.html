@@ -72,6 +72,14 @@
   .start:active:not(:disabled) { transform: scale(.99); }
   .start:disabled { opacity: .4; cursor: not-allowed; }
 
+  .or-sep { display: flex; align-items: center; gap: 14px; margin: 24px 2px 0; color: var(--muted); font-size: 0.82rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+  .or-sep::before, .or-sep::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+
+  .ta { margin-top: 16px; width: 100%; resize: vertical; min-height: 120px; font-family: inherit; font-size: 0.98rem; line-height: 1.5;
+    color: var(--fg); background: var(--bg); border: 1.6px solid var(--line); border-radius: var(--radius-sm); padding: 13px 15px; }
+  .ta:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+  .ta::placeholder { color: var(--muted); opacity: .7; }
+
   .progress { margin-top: 26px; }
   .status { font-size: 0.98rem; color: var(--muted); margin-bottom: 10px; font-variant-numeric: tabular-nums; }
   .bar { height: 10px; border-radius: 999px; background: var(--track); overflow: hidden; }
@@ -134,6 +142,15 @@
     <div class="slots" id="slots"></div>
     <p class="hint" id="counter"></p>
     <button class="start" id="start" disabled>Знайти дублі</button>
+  </section>
+
+  <div class="or-sep"><span>або</span></div>
+
+  <section class="card" aria-label="Пошук за текстом оголошення">
+    <div class="card-title">Встав текст оголошення</div>
+    <p class="hint">Скопіюй увесь текст оголошення (опис, параметри) — бажано разом із <b>посиланням</b> на нього. За посиланням підтягнемо всі фото й звіримо дублі по фото. Без посилання шукаємо за даними.</p>
+    <textarea class="ta" id="adtext" rows="7" placeholder="Напр.: Продам 2-кімнатну квартиру, вул. Романа Ратушного, 58 м², 5/9 поверх, 79000$. https://www.olx.ua/..."></textarea>
+    <button class="start" id="startText" disabled>Знайти дублі за текстом</button>
   </section>
 
   <section class="progress" id="progress" hidden aria-live="polite">
@@ -300,27 +317,25 @@
 
     function showError(m) { document.getElementById('errText').textContent = m; document.getElementById('errBox').hidden = false; }
 
-    startBtn.addEventListener('click', function () {
-      if (startBtn.disabled) return;
-      var selected = files.filter(function (f) { return !!f; });
-      if (!selected.length) return;
+    // Спільний запуск пошуку: і для скриншотів, і для тексту.
+    function runSearch(opts) {
+      // opts: { url, body, startStatus, btn, btnBusy, btnDone }
       var progress = document.getElementById('progress'), results = document.getElementById('results'),
           errBox = document.getElementById('errBox'), bar = document.getElementById('barfill'), status = document.getElementById('status');
       results.hidden = true; errBox.hidden = true; progress.hidden = false;
-      startBtn.disabled = true; startBtn.textContent = 'Шукаємо…'; bar.style.width = '0%';
-      status.textContent = 'Аналізуємо скриншоти…';
+      startBtn.disabled = true; startText.disabled = true;
+      opts.btn.textContent = opts.btnBusy; bar.style.width = '0%';
+      status.textContent = opts.startStatus;
       progress.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
       var pct = 0;
       var waiting = setInterval(function () {
         pct += Math.random() * 6 + 2; if (pct > 92) pct = 92; bar.style.width = pct + '%';
         if (pct > 30 && pct < 75) status.textContent = 'Шукаємо на порталах за даними…';
+        if (pct >= 75) status.textContent = 'Звіряємо по фото…';
       }, 400);
 
-      var fd = new FormData();
-      selected.forEach(function (f) { fd.append('files', f, f.name || 'screenshot.jpg'); });
-
-      fetch('/api/vip/search', { method: 'POST', body: fd })
+      fetch(opts.url, { method: 'POST', body: opts.body })
         .then(function (resp) { return resp.json().then(function (data) { return { ok: resp.ok, data: data }; }); })
         .then(function (res) {
           clearInterval(waiting); bar.style.width = '100%';
@@ -334,15 +349,40 @@
           document.getElementById('resnote').textContent = res.data.note || '';
           setTimeout(function () {
             progress.hidden = true; results.hidden = false;
-            startBtn.disabled = false; startBtn.textContent = 'Шукати ще раз';
+            startBtn.disabled = false; startText.disabled = !adtext.value.trim();
+            opts.btn.textContent = opts.btnDone;
             results.scrollIntoView({ behavior: 'smooth', block: 'start' });
           }, 300);
         })
         .catch(function (error) {
           clearInterval(waiting); progress.hidden = true;
-          startBtn.disabled = false; startBtn.textContent = 'Знайти дублі';
+          startBtn.disabled = false; startText.disabled = !adtext.value.trim();
+          opts.btn.textContent = opts.btnDone;
           showError(error && error.message ? error.message : 'Помилка з’єднання');
         });
+    }
+
+    startBtn.addEventListener('click', function () {
+      if (startBtn.disabled) return;
+      var selected = files.filter(function (f) { return !!f; });
+      if (!selected.length) return;
+      var fd = new FormData();
+      selected.forEach(function (f) { fd.append('files', f, f.name || 'screenshot.jpg'); });
+      runSearch({ url: '/api/vip/search', body: fd, startStatus: 'Аналізуємо скриншоти…',
+        btn: startBtn, btnBusy: 'Шукаємо…', btnDone: 'Шукати ще раз' });
+    });
+
+    var adtext = document.getElementById('adtext');
+    var startText = document.getElementById('startText');
+    adtext.addEventListener('input', function () { startText.disabled = !adtext.value.trim(); });
+    startText.addEventListener('click', function () {
+      if (startText.disabled) return;
+      var txt = adtext.value.trim();
+      if (txt.length < 15) { showError('Встав повний текст оголошення'); return; }
+      var fd = new FormData();
+      fd.append('text', txt);
+      runSearch({ url: '/api/vip/search-text', body: fd, startStatus: 'Читаємо текст оголошення…',
+        btn: startText, btnBusy: 'Шукаємо…', btnDone: 'Шукати ще раз за текстом' });
     });
   })();
 </script>
