@@ -119,15 +119,29 @@ async def _vip_pipeline(subject: dict, reference_images: list[tuple[bytes, str]]
     from dubl.portals import (search_dimria, search_rieltor, search_olx, search_extra_portals,
                               apply_filters, usd_rate, confirm_by_photo, match_verdict,
                               enrich_candidate_prices)
+    import time
+    t_start = time.monotonic()
+
+    async def _timed(name, coro):
+        t = time.monotonic()
+        try:
+            return await coro
+        finally:
+            print(f"dubl timing source {name}: {time.monotonic() - t:.1f}s", flush=True)
+
     candidates: list = []
     photo_checked = False
     stats = {"raw": 0, "filtered": 0, "photo_yes": 0, "maybe": 0}
     try:
+        t0 = time.monotonic()
         parts = await asyncio.gather(
-            search_dimria(subject), search_rieltor(subject), search_olx(subject),
-            search_extra_portals(subject),
+            _timed("dimria", search_dimria(subject)),
+            _timed("rieltor", search_rieltor(subject)),
+            _timed("olx", search_olx(subject)),
+            _timed("extra", search_extra_portals(subject)),
             return_exceptions=True,
         )
+        print(f"dubl timing SOURCES total: {time.monotonic() - t0:.1f}s", flush=True)
         raw: list = []
         for name, part in zip(("dimria", "rieltor", "olx", "extra"), parts):
             if isinstance(part, Exception):
@@ -162,17 +176,24 @@ async def _vip_pipeline(subject: dict, reference_images: list[tuple[bytes, str]]
         # M3: підтвердження по фото — коли є еталонні фото об'єкта.
         if candidates and reference_images:
             photo_checked = True
+            t_photo = time.monotonic()
             semaphore = asyncio.Semaphore(4)
 
             async def _confirm(c):
                 async with semaphore:
+                    tc = time.monotonic()
                     try:
                         c["photo"] = await confirm_by_photo(reference_images, c)
                     except Exception as photo_error:
                         print(f"dubl vip confirm failed: {photo_error}", flush=True)
                         c["photo"] = {"match": "error", "confidence": 0, "matched": 0}
+                    finally:
+                        print(f"dubl timing photo {(c.get('url') or '')[:45]}: "
+                              f"{time.monotonic() - tc:.1f}s", flush=True)
 
             await asyncio.gather(*[_confirm(c) for c in candidates[:14]])
+            print(f"dubl timing PHOTO total ({min(len(candidates),14)} шт): "
+                  f"{time.monotonic() - t_photo:.1f}s", flush=True)
 
         # Вердикт для всіх (і коли фото не перевіряли — за силою даних).
         for c in candidates:
@@ -186,11 +207,14 @@ async def _vip_pipeline(subject: dict, reference_images: list[tuple[bytes, str]]
             reverse=True,
         )
         # Дотягнути ціну лише для показаних (мало запитів) — там, де її немає.
+        t_enrich = time.monotonic()
         try:
             await enrich_candidate_prices(subject, candidates)
         except Exception as price_error:
             print(f"dubl vip price enrich error: {price_error}", flush=True)
+        print(f"dubl timing ENRICH: {time.monotonic() - t_enrich:.1f}s", flush=True)
         print(f"dubl vip stats: {stats} → показано {len(candidates)}", flush=True)
+        print(f"dubl timing PIPELINE total: {time.monotonic() - t_start:.1f}s", flush=True)
     except Exception as error:
         import traceback
         print("dubl vip search error:\n" + traceback.format_exc(), flush=True)
@@ -217,6 +241,8 @@ async def vip_search(files: list[UploadFile] = File(...)) -> dict:
     if not files:
         raise HTTPException(status_code=400, detail="Не передано жодного скриншота")
     images = await _read_uploads(files)
+    import time
+    t_ext = time.monotonic()
     try:
         subject = await extract_subject(images)
     except RuntimeError as error:
@@ -224,6 +250,7 @@ async def vip_search(files: list[UploadFile] = File(...)) -> dict:
     except Exception as error:
         print(f"dubl vip extract error: {error}", flush=True)
         raise HTTPException(status_code=502, detail="Не вдалося проаналізувати скриншот")
+    print(f"dubl timing EXTRACT (скриншоти): {time.monotonic() - t_ext:.1f}s", flush=True)
 
     return await _vip_pipeline(subject, images)
 
