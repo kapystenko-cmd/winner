@@ -116,7 +116,7 @@ async def _vip_pipeline(subject: dict, reference_images: list[tuple[bytes, str]]
     підтвердження по фото. reference_images — фото об'єкта (скриншоти або підтягнуті
     з посилання першоджерела). Якщо фото немає — показуємо кандидатів тільки за даними.
     """
-    from dubl.portals import (search_dimria, search_olx, search_extra_portals,
+    from dubl.portals import (search_dimria, search_rieltor, search_olx, search_extra_portals,
                               apply_filters, usd_rate, confirm_by_photo, match_verdict,
                               enrich_candidate_prices)
     candidates: list = []
@@ -124,11 +124,12 @@ async def _vip_pipeline(subject: dict, reference_images: list[tuple[bytes, str]]
     stats = {"raw": 0, "filtered": 0, "photo_yes": 0, "maybe": 0}
     try:
         parts = await asyncio.gather(
-            search_dimria(subject), search_olx(subject), search_extra_portals(subject),
+            search_dimria(subject), search_rieltor(subject), search_olx(subject),
+            search_extra_portals(subject),
             return_exceptions=True,
         )
         raw: list = []
-        for name, part in zip(("dimria", "olx", "extra"), parts):
+        for name, part in zip(("dimria", "rieltor", "olx", "extra"), parts):
             if isinstance(part, Exception):
                 print(f"dubl vip source {name} failed: {type(part).__name__}: {part}", flush=True)
             elif isinstance(part, list):

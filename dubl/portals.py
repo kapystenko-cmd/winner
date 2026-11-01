@@ -53,124 +53,259 @@ def _key(value: str | None) -> str:
     return value.strip(" .,;:").strip()
 
 
-async def _resolve_city(city: str, client: httpx.AsyncClient) -> tuple[int, int] | None:
-    wanted = _key(city)
-    if not wanted:
-        return None
-    resp = await client.get(DIMRIA_BASE + "/states", params={"api_key": settings.dimria_api_key, "lang_id": 4})
-    resp.raise_for_status()
-    states = resp.json() or []
-    # обласні центри — без запиту списку міст
-    for state in states:
-        aliases = (state.get("region_name"), state.get("center_declension"), state.get("name"))
-        if wanted in {_key(a) for a in aliases if a}:
-            sid = int(state["stateID"])
-            return sid, sid
-    # інші міста — через /cities/{stateId}
-    semaphore = asyncio.Semaphore(5)
+# ─────────────────────────────────────────────────────────────────────────
+# ПОШУК ПО ПОРТАЛАХ напряму в їхніх розділах (продаж/оренда) з фільтром за
+# містом/кімнатами/площею. Беремо вже відфільтровані оголошення з повними
+# даними — щоб НЕ витрачати фото-перевірки на сміття.
+#   • DOM.RIA — SSR-сторінка розділу містить window.__INITIAL_STATE__ з усіма
+#     картками (ціна $/грн, площа, кімнати, поверх, вулиця) — без API/ZenRows.
+#   • rieltor.ua — розділ /<місто>/flats-sale|flats-rent/<N>-rooms/ з картками.
+# ─────────────────────────────────────────────────────────────────────────
 
-    async def find(state: dict) -> tuple[int, int] | None:
-        async with semaphore:
-            sid = int(state["stateID"])
-            r = await client.get(DIMRIA_BASE + f"/cities/{sid}", params={"api_key": settings.dimria_api_key, "lang_id": 4})
-            r.raise_for_status()
-            for item in (r.json() or []):
-                if wanted == _key(item.get("name")):
-                    return sid, int(item["cityID"])
-        return None
+# Перевірені слаги міст (той самий слаг працює і на DOM.RIA, і на rieltor).
+# Решту резолвимо через веб-пошук. Хибний слаг відсікаємо звіркою назви міста.
+_CITY_SLUGS = {
+    "київ": "kiev", "харків": "kharkov", "одеса": "odessa", "дніпро": "dnepr",
+    "львів": "lvov", "миколаїв": "nikolaev", "вінниця": "vinnitsa",
+    "полтава": "poltava", "чернігів": "chernigov", "черкаси": "cherkassy",
+    "житомир": "zhitomir", "суми": "sumy", "рівне": "rovno",
+}
 
-    tasks = [asyncio.create_task(find(s)) for s in states]
-    try:
-        for task in asyncio.as_completed(tasks):
-            found = await task
-            if found:
-                return found
-    finally:
-        for task in tasks:
-            if not task.done():
-                task.cancel()
+
+def _city_stem(name: str | None) -> str:
+    """Корінь назви міста для звірки з урахуванням відмінків (Вінниця/Вінниці)."""
+    w = _key(name).split(" ")[0]
+    return w[:-2] if len(w) > 5 else w
+
+
+def _city_matches(requested: str | None, got: str | None) -> bool:
+    stem = _city_stem(requested)
+    return bool(stem) and (stem in _key(got) or _city_stem(got) in _key(requested))
+
+
+def _json_after(html: str, marker: str) -> dict | None:
+    """Витягти JSON-об'єкт одразу після marker (з коректним балансом дужок)."""
+    i = html.find(marker)
+    if i < 0:
+        return None
+    i = html.find("{", i)
+    if i < 0:
+        return None
+    depth, instr, esc = 0, False, False
+    for j in range(i, len(html)):
+        ch = html[j]
+        if instr:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                instr = False
+        elif ch == '"':
+            instr = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(html[i:j + 1])
+                except Exception:
+                    return None
     return None
 
 
-async def _detail(item_id, client: httpx.AsyncClient) -> dict | None:
+async def _get_text(url: str, client: httpx.AsyncClient) -> str:
     try:
-        resp = await client.get(DIMRIA_BASE + f"/info/{item_id}", params={"api_key": settings.dimria_api_key, "lang_id": 4})
-        resp.raise_for_status()
-        data = resp.json() or {}
-        price_arr = data.get("priceArr") or {}
-        price_uah = _num(price_arr.get("3"))
-        slug = str(data.get("beautiful_url") or item_id)
-        if not slug.endswith(".html"):
-            slug += ".html"
-        street = data.get("street_name_uk") or data.get("street_name") or ""
-        building = data.get("building_number_str") or ""
-        return {
-            "source": "dimria",
-            "url": "https://dom.ria.com/uk/" + slug,
-            "title": data.get("description_uk") or data.get("realty_type_name") or "",
-            "price_uah": round(price_uah) if price_uah else None,
-            "area_sqm": _num(data.get("total_square_meters")) or None,
-            "rooms": data.get("rooms_count"),
-            "floor": data.get("floor"),
-            "address": (str(street) + " " + str(building)).strip(),
-            "city": data.get("city_name_uk") or data.get("city_name") or "",
-        }
+        r = await client.get(url, follow_redirects=True)
+        if r.status_code == 200:
+            return r.text
     except Exception as error:
-        print(f"dubl vip dimria detail {item_id}: {error}", flush=True)
-        return None
+        print(f"dubl portal get {url[:60]}: {type(error).__name__}", flush=True)
+    return ""
 
 
-async def search_dimria(subject: dict, limit: int = 40) -> list[dict]:
-    """Кандидати з DOM.RIA за даними: місто, тип, кімнати строго, площа ±10%."""
-    if (not settings.dimria_api_key or not settings.dimria_enabled
-            or settings.dimria_api_key == "your-dimria-api-key"):
-        return []
+async def _resolve_slug(city: str, portal: str, client: httpx.AsyncClient) -> str:
+    """Слаг міста для порталу: з мапи, інакше з веб-пошуку (перший URL порталу)."""
+    slug = _CITY_SLUGS.get(_key(city))
+    if slug:
+        return slug
+    try:
+        from dubl.catalog import serper_search
+        host = "dom.ria.com" if portal == "domria" else "rieltor.ua"
+        organic = await serper_search(f"{host} квартири {city}", num=10)
+        pat = (r'dom\.ria\.com/\w+/(?:prodazha|arenda|prodaja|orenda)-kvartir/([a-z0-9-]+?)/'
+               if portal == "domria"
+               else r'rieltor\.ua/([a-z0-9-]+?)/flats-(?:sale|rent)')
+        for item in organic:
+            m = re.search(pat, (item.get("link") or ""), re.I)
+            if m:
+                return m.group(1).lower()
+        if portal == "domria":  # запасний варіант — зі слагу оголошення
+            for item in organic:
+                m = re.search(r'-kvartira-([a-z]+)-', (item.get("link") or ""), re.I)
+                if m:
+                    return m.group(1).lower()
+    except Exception as error:
+        print(f"dubl resolve slug {portal} {city}: {error}", flush=True)
+    return ""
+
+
+async def search_dimria(subject: dict, pages: int = 3) -> list[dict]:
+    """DOM.RIA напряму: розділ продажу/оренди квартир міста → картки з JSON."""
     city = subject.get("city")
     otype = str(subject.get("object_type") or "apartment")
-    rooms = subject.get("rooms")
-    area = subject.get("area_sqm")
-    spec = _SPEC.get(otype)
-    if not spec or not city:
+    if not city or otype != "apartment":  # прямий скрейп — лише квартири
         return []
+    rooms = _as_int(subject.get("rooms"))
+    try:
+        area = float(subject["area_sqm"]) if subject.get("area_sqm") not in (None, "") else None
+    except (TypeError, ValueError):
+        area = None
+    deal = "arenda-kvartir" if str(subject.get("deal_type")) == "rent" else "prodazha-kvartir"
+    out: list[dict] = []
     try:
         async with httpx.AsyncClient(timeout=30, headers=_HDRS) as client:
-            resolved = await _resolve_city(city, client)
-            if not resolved:
-                print(f"dubl vip dimria: city not resolved: {city}", flush=True)
+            slug = await _resolve_slug(city, "domria", client)
+            if not slug:
+                print(f"dubl dimria: slug не знайдено для {city}", flush=True)
                 return []
-            state_id, city_id = resolved
-            params: dict = {
-                "api_key": settings.dimria_api_key,
-                "category": spec["category"],
-                "operation_type": 1,  # продаж
-                "city_id": city_id,
-                "state_id": state_id,
-                "page": 0,
-                "limit": min(max(1, limit), 60),
-            }
-            if spec.get("realty_type"):
-                params["realty_type"] = spec["realty_type"]
-            if rooms and spec.get("rooms_ch"):
-                params[f"characteristic[{spec['rooms_ch']}][from]"] = int(rooms)
-                params[f"characteristic[{spec['rooms_ch']}][to]"] = int(rooms)
-            resp = await client.get(DIMRIA_BASE + "/search", params=params)
-            resp.raise_for_status()
-            ids = list((resp.json() or {}).get("items") or [])[:limit]
-            out = []
-            for item_id in ids:
-                detail = await _detail(item_id, client)
-                if detail:
-                    out.append(detail)
-                await asyncio.sleep(0.3)  # DOM.RIA 429-захист
+            base = f"https://dom.ria.com/uk/{deal}/{slug}/"
+            htmls = await asyncio.gather(*[
+                _get_text(base if p == 1 else base + f"?page={p}", client)
+                for p in range(1, pages + 1)
+            ])
+            validated = None
+            for html in htmls:
+                if not html:
+                    continue
+                state = _json_after(html, "window.__INITIAL_STATE__")
+                items = (((state or {}).get("catalog") or {}).get("realtyForCatalog")) or []
+                for it in items:
+                    got_city = it.get("city_name_uk") or it.get("cityName") or ""
+                    if validated is None:
+                        validated = _city_matches(city, got_city)
+                        if not validated:
+                            print(f"dubl dimria: слаг {slug} дав інше місто ({got_city}) — пропуск", flush=True)
+                            return []
+                    bu = it.get("beautiful_url") or ""
+                    if not bu:
+                        continue
+                    price_usd = _num(it.get("priceUSD")) or _num((it.get("priceArr") or {}).get("1"))
+                    price_uah = _num(it.get("priceUAH")) or _num((it.get("priceArr") or {}).get("3"))
+                    street = it.get("street_name_uk") or it.get("streetName") or ""
+                    building = it.get("building_number_str") or ""
+                    out.append({
+                        "source": "dimria",
+                        "url": "https://dom.ria.com/uk/" + bu,
+                        "title": (it.get("description_uk") or "")[:120],
+                        "price_usd": round(price_usd) if price_usd else None,
+                        "price_uah": round(price_uah) if price_uah else None,
+                        "area_sqm": _num(it.get("total_square_meters")) or None,
+                        "rooms": _as_int(it.get("rooms_count")),
+                        "floor": _as_int(it.get("floor")),
+                        "street": street,
+                        "address": (str(street) + " " + str(building)).strip(),
+                        "city": got_city,
+                    })
     except Exception as error:
-        print(f"dubl vip dimria error: {type(error).__name__}: {error}", flush=True)
+        print(f"dubl dimria error: {type(error).__name__}: {error}", flush=True)
         return []
+    return _tighten(out, rooms, area)
 
-    # площа ±10% (кімнати вже строго відфільтровані пошуком)
-    if area:
-        tol = settings.area_tolerance
-        low, high = area * (1 - tol), area * (1 + tol)
-        out = [x for x in out if not x.get("area_sqm") or low <= x["area_sqm"] <= high]
+
+_RI_FLOOR_RE = re.compile(r'поверх\s*(\d{1,2})\s*з\s*\d{1,2}', re.I)
+_RI_ROOMS_AREA_RE = re.compile(r'(\d)\s*кімнат\w*\s*(\d{2,3}(?:[.,]\d)?)\s*/\s*\d', re.I)
+_RI_PRICE_RE = re.compile(r'(\d[\d\s  ]{2,})\s*\$')
+
+
+async def search_rieltor(subject: dict) -> list[dict]:
+    """rieltor.ua напряму: розділ продажу/оренди (+фільтр кімнат у шляху)."""
+    city = subject.get("city")
+    otype = str(subject.get("object_type") or "apartment")
+    if not city or otype != "apartment":
+        return []
+    rooms = _as_int(subject.get("rooms"))
+    try:
+        area = float(subject["area_sqm"]) if subject.get("area_sqm") not in (None, "") else None
+    except (TypeError, ValueError):
+        area = None
+    deal = "flats-rent" if str(subject.get("deal_type")) == "rent" else "flats-sale"
+    out: list[dict] = []
+    try:
+        async with httpx.AsyncClient(timeout=30, headers=_HDRS) as client:
+            slug = await _resolve_slug(city, "rieltor", client)
+            if not slug:
+                print(f"dubl rieltor: slug не знайдено для {city}", flush=True)
+                return []
+            room_path = f"{rooms}-rooms/" if rooms else ""
+            url = f"https://rieltor.ua/{slug}/{deal}/{room_path}"
+            html = await _get_text(url, client)
+            if not html:
+                return []
+            # Звірка міста: більшість карток мають слаг саме цього міста.
+            page_slugs = re.findall(rf'rieltor\.ua/([a-z0-9-]+)/{deal}/view/', html, re.I)
+            if page_slugs:
+                from collections import Counter
+                top = Counter(page_slugs).most_common(1)[0][0]
+                if top != slug:
+                    print(f"dubl rieltor: слаг {slug} дав інше місто ({top}) — пропуск", flush=True)
+                    return []
+            # Картки в порядку DOM: id ↔ (кімнати,площа) ↔ поверх ↔ ціна.
+            ids: list[str] = []
+            for m in re.finditer(rf'/{deal}/view/(\d+)/', html):
+                if not ids or ids[-1] != m.group(1):
+                    ids.append(m.group(1))
+            # Площа/кімнати/поверх беремо з тексту карток (надійно вирівняні за
+            # порядком DOM). Ціну НЕ парсимо з тексту (там ще й ціна за м² збиває
+            # вирівнювання) — її дотягнемо зі сторінки показаних кандидатів.
+            plain = re.sub(r"<[^>]+>", " ", html)
+            ra = _RI_ROOMS_AREA_RE.findall(plain)
+            floors = _RI_FLOOR_RE.findall(plain)
+            for i, cid in enumerate(ids):
+                r_ = _as_int(ra[i][0]) if i < len(ra) else rooms
+                a_ = None
+                if i < len(ra):
+                    try:
+                        a_ = float(ra[i][1].replace(",", "."))
+                    except ValueError:
+                        a_ = None
+                f_ = _as_int(floors[i]) if i < len(floors) else None
+                out.append({
+                    "source": "rieltor.ua",
+                    "url": f"https://rieltor.ua/{slug}/{deal}/view/{cid}/",
+                    "title": "",
+                    "price_usd": None,
+                    "price_uah": None,
+                    "area_sqm": a_,
+                    "rooms": r_ or rooms,
+                    "floor": f_,
+                    "street": "",
+                    "address": "",
+                    "city": city,
+                })
+    except Exception as error:
+        print(f"dubl rieltor error: {type(error).__name__}: {error}", flush=True)
+        return []
+    return _tighten(out, rooms, area)
+
+
+def _tighten(items: list[dict], rooms: int | None, area: float | None) -> list[dict]:
+    """Строгий відбір на рівні джерела: кімнати точно, площа ±10%."""
+    tol = settings.area_tolerance
+    out = []
+    for c in items:
+        cr = _as_int(c.get("rooms"))
+        if rooms and cr and cr != rooms:
+            continue
+        if area and c.get("area_sqm"):
+            try:
+                a = float(c["area_sqm"])
+                if not (area * (1 - tol) <= a <= area * (1 + tol)):
+                    continue
+            except (TypeError, ValueError):
+                pass
+        out.append(c)
     return out
 
 
@@ -328,6 +463,10 @@ async def search_olx(subject: dict, limit: int = 60) -> list[dict]:
     city = subject.get("city")
     otype = str(subject.get("object_type") or "apartment")
     if not city:
+        return []
+    if str(subject.get("deal_type")) == "rent":
+        # Перевірений olx_service ocinka працює лише на ПРОДАЖ (аренду відсіює).
+        # Для оренди OLX поки пропускаємо — покривають DOM.RIA і rieltor.
         return []
     _ensure_ocinka_env()
     try:
@@ -628,8 +767,8 @@ _EXTRA_PORTALS = ["dom.ria.com", "rieltor.ua", "lun.ua", "m2bomber.com"]
 
 # Портали, оголошення яких беремо з веб-пошуку (Serper free забороняє site:,
 # тому робимо звичайні запити і фільтруємо результати за доменом).
-_WANTED_PORTALS = ["dom.ria.com", "rieltor.ua", "lun.ua", "m2bomber.com",
-                   "flatfy.ua", "address.ua", "olx.ua"]
+# DOM.RIA / rieltor / OLX шукаємо НАПРЯМУ (вище), тож тут лише решта агрегаторів.
+_WANTED_PORTALS = ["lun.ua", "m2bomber.com", "flatfy.ua", "address.ua"]
 
 _RE_ROOMS = re.compile(r'(\d)\s*[-–]?\s*(?:кімнат|комнат|кімн|-?\s*к\b)', re.I)
 _RE_AREA = re.compile(r'(\d{2,3}(?:[.,]\d+)?)\s*(?:м²|м2|кв\.?\s*м)', re.I)
