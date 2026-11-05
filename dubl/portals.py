@@ -184,36 +184,65 @@ def _ok_items(items) -> bool:
 
 
 def _dimria_items(html: str) -> list[dict]:
-    """Дістати картки DOM.RIA з __INITIAL_STATE__ у будь-якій формі:
-    (а) = JSON.parse("…") — валідний JSON-рядок; (б) = {…} об'єкт-літерал,
-    з якого беремо лише масив "realtyForCatalog":[…] (решта стану часто
-    містить JS-токени й не парситься цілком)."""
+    """Дістати картки DOM.RIA з блоку "realtyForCatalog":[…].
+
+    НЕ парсимо весь JS-об'єкт як JSON (у описах трапляються і керуючі символи,
+    і JS-escape типу \\' — json.loads падає навіть зі strict=False). Замість
+    цього по кожному оголошенню витягуємо потрібні поля регулярками — це
+    стійко до будь-яких спецсимволів у тексті."""
     if not html:
         return []
-    # (а) форма JSON.parse("…")
-    m = re.search(r'__INITIAL_STATE__\s*=\s*JSON\.parse\(\s*("(?:[^"\\]|\\.)*")\s*\)', html, re.S)
-    if m:
-        try:
-            data = _loads_lenient(json.loads(m.group(1)))
-            items = (((data or {}).get("catalog") or {}).get("realtyForCatalog")) or []
-            if _ok_items(items):
-                return items
-        except Exception:
-            pass
-    # (б) об'єкт-літерал → масив realtyForCatalog (можливо з JS-токенами)
-    for mm in re.finditer(r'"realtyForCatalog"\s*:\s*', html):
-        lb = mm.end()
-        if lb < len(html) and html[lb] == "[":
-            arr = _balanced(html, lb)
-            if arr:
-                items = _loads_lenient(arr)
-                if _ok_items(items):
-                    return items
-    # Діагностика з контекстом навколо першого realtyForCatalog.
-    idx = html.find("realtyForCatalog")
-    ctx = html[max(0, idx - 8):idx + 40].replace("\n", " ") if idx >= 0 else ""
-    print(f"dubl dimria parse fail: len={len(html)} has_catalog={idx >= 0} ctx={ctx!r}", flush=True)
-    return []
+    idx = html.find('"realtyForCatalog"')
+    if idx < 0:
+        return []
+    lb = html.find("[", idx)
+    if lb < 0:
+        return []
+    arr = _balanced(html, lb)
+    region = arr if arr else html[lb:lb + 900_000]  # якщо не збалансувалось — беремо шматок
+    out: list[dict] = []
+    # Кожна картка в масиві починається з {"show_on_map"
+    for ch in re.split(r'\{"show_on_map"', region)[1:]:
+        m_url = re.search(r'"beautiful_url":"([^"]+)"', ch)
+        if not m_url:
+            continue
+
+        def g(pat):
+            mm = re.search(pat, ch)
+            return mm.group(1) if mm else None
+
+        rooms = _as_int(g(r'"rooms_count":(\d+)'))
+        area = _num(g(r'"total_square_meters":([\d.]+)')) or None
+        floor = _as_int(g(r'"floor":(\d+)'))
+        usd = _num(g(r'"priceUSD":"?([\d  ]+)'))
+        uah = _num(g(r'"priceUAH":"?([\d  ]+)'))
+        if not usd and not uah:
+            price = _num(g(r'"price":(\d+)'))
+            cur = g(r'"currency_type":"([^"]*)"') or ""
+            if "$" in cur:
+                usd = price
+            elif "грн" in cur or "₴" in cur:
+                uah = price
+        street = g(r'"street_name_uk":"([^"]*)"') or ""
+        building = g(r'"building_number_str":"([^"]*)"') or ""
+        city = g(r'"city_name_uk":"([^"]*)"') or ""
+        out.append({
+            "source": "dimria",
+            "url": "https://dom.ria.com/uk/" + m_url.group(1),
+            "title": "",
+            "price_usd": round(usd) if usd else None,
+            "price_uah": round(uah) if uah else None,
+            "area_sqm": area,
+            "rooms": rooms,
+            "floor": floor,
+            "street": street,
+            "address": (str(street) + " " + str(building)).strip(),
+            "city": city,
+        })
+    if not out:
+        ctx = html[max(0, idx - 8):idx + 40].replace("\n", " ")
+        print(f"dubl dimria parse fail: len={len(html)} ctx={ctx!r}", flush=True)
+    return out
 
 
 async def search_dimria(subject: dict, pages: int = 3) -> list[dict]:
@@ -245,34 +274,13 @@ async def search_dimria(subject: dict, pages: int = 3) -> list[dict]:
             for html in htmls:
                 if not html:
                     continue
-                items = _dimria_items(html)
-                for it in items:
-                    got_city = it.get("city_name_uk") or it.get("cityName") or ""
+                for it in _dimria_items(html):
                     if validated is None:
-                        validated = _city_matches(city, got_city)
+                        validated = _city_matches(city, it.get("city"))
                         if not validated:
-                            print(f"dubl dimria: слаг {slug} дав інше місто ({got_city}) — пропуск", flush=True)
+                            print(f"dubl dimria: слаг {slug} дав інше місто ({it.get('city')}) — пропуск", flush=True)
                             return []
-                    bu = it.get("beautiful_url") or ""
-                    if not bu:
-                        continue
-                    price_usd = _num(it.get("priceUSD")) or _num((it.get("priceArr") or {}).get("1"))
-                    price_uah = _num(it.get("priceUAH")) or _num((it.get("priceArr") or {}).get("3"))
-                    street = it.get("street_name_uk") or it.get("streetName") or ""
-                    building = it.get("building_number_str") or ""
-                    out.append({
-                        "source": "dimria",
-                        "url": "https://dom.ria.com/uk/" + bu,
-                        "title": (it.get("description_uk") or "")[:120],
-                        "price_usd": round(price_usd) if price_usd else None,
-                        "price_uah": round(price_uah) if price_uah else None,
-                        "area_sqm": _num(it.get("total_square_meters")) or None,
-                        "rooms": _as_int(it.get("rooms_count")),
-                        "floor": _as_int(it.get("floor")),
-                        "street": street,
-                        "address": (str(street) + " " + str(building)).strip(),
-                        "city": got_city,
-                    })
+                    out.append(it)
     except Exception as error:
         print(f"dubl dimria error: {type(error).__name__}: {error}", flush=True)
         return []
