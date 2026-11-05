@@ -164,15 +164,16 @@ async def _resolve_slug(city: str, portal: str, client: httpx.AsyncClient) -> st
 
 
 def _loads_lenient(s: str):
-    """json.loads, а якщо впало — прибираємо JS-токени (undefined / хвостові коми)."""
+    """json.loads зі strict=False (дозволяє буквальні переноси рядків у
+    описах оголошень); якщо впало — прибираємо JS-токени (undefined/коми)."""
     try:
-        return json.loads(s)
+        return json.loads(s, strict=False)
     except Exception:
         pass
     try:
         s2 = re.sub(r':\s*undefined', ":null", s)
         s2 = re.sub(r",\s*([}\]])", r"\1", s2)
-        return json.loads(s2)
+        return json.loads(s2, strict=False)
     except Exception:
         return None
 
@@ -193,7 +194,7 @@ def _dimria_items(html: str) -> list[dict]:
     m = re.search(r'__INITIAL_STATE__\s*=\s*JSON\.parse\(\s*("(?:[^"\\]|\\.)*")\s*\)', html, re.S)
     if m:
         try:
-            data = json.loads(json.loads(m.group(1)))
+            data = _loads_lenient(json.loads(m.group(1)))
             items = (((data or {}).get("catalog") or {}).get("realtyForCatalog")) or []
             if _ok_items(items):
                 return items
@@ -524,8 +525,17 @@ async def usd_rate() -> float:
         return 41.5
 
 
+_OLX_APT_URL_RE = re.compile(r'(kvartir|kvartyr|-kv-|kimnat|kimnatn|komnat|-kmn-|-kom-)', re.I)
+_OLX_APT_TXT_RE = re.compile(r'(кімнат|кварт|кімн|комнат|м²|м2|кв\.?\s*м)', re.I)
+
+
+def _is_olx_apartment(url: str, title: str) -> bool:
+    """Чи це оголошення про квартиру (а не стороння реклама зі списку OLX)."""
+    return bool(_OLX_APT_URL_RE.search(url or "") or _OLX_APT_TXT_RE.search(title or ""))
+
+
 async def search_olx(subject: dict, limit: int = 60) -> list[dict]:
-    """Кандидати з OLX через ZenRows — переиспользуємо перевірений olx_service ocinka."""
+    """Кандидати з OLX — картки зі сторінки списку (без детального скану)."""
     if not settings.zenrows_api_key:
         return []
     city = subject.get("city")
@@ -557,12 +567,18 @@ async def search_olx(subject: dict, limit: int = 60) -> list[dict]:
         print(f"dubl vip olx error: {type(error).__name__}: {error}", flush=True)
         return []
 
+    # Сторінка списку віддає і сторонні оголошення (реклама/рекомендації:
+    # одяг, книги, взуття…). Лишаємо ЛИШЕ квартири — за ознакою в URL/заголовку.
     out = []
     for r in (cards or []):
+        url = r.get("url") or ""
+        title = r.get("title") or ""
+        if not _is_olx_apartment(url, title):
+            continue
         out.append({
             "source": "olx",
-            "url": r.get("url") or "",
-            "title": r.get("title") or "",
+            "url": url,
+            "title": title,
             "price_uah": r.get("price_uah"),
             "area_sqm": r.get("area_sqm"),
             "rooms": r.get("rooms"),
@@ -573,7 +589,9 @@ async def search_olx(subject: dict, limit: int = 60) -> list[dict]:
         area = float(subject["area_sqm"]) if subject.get("area_sqm") not in (None, "") else None
     except (TypeError, ValueError):
         area = None
-    return _tighten(out, rooms, area)
+    tightened = _tighten(out, rooms, area)
+    print(f"dubl olx: карток {len(cards or [])} → квартир {len(out)} → після фільтра {len(tightened)}", flush=True)
+    return tightened
 
 
 # ---------------------------------------------------------------- M3: фото
