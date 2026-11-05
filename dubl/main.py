@@ -177,7 +177,7 @@ async def _vip_pipeline(subject: dict, reference_images: list[tuple[bytes, str]]
         if candidates and reference_images:
             photo_checked = True
             t_photo = time.monotonic()
-            semaphore = asyncio.Semaphore(4)
+            semaphore = asyncio.Semaphore(6)
 
             async def _confirm(c):
                 async with semaphore:
@@ -191,8 +191,8 @@ async def _vip_pipeline(subject: dict, reference_images: list[tuple[bytes, str]]
                         print(f"dubl timing photo {(c.get('url') or '')[:45]}: "
                               f"{time.monotonic() - tc:.1f}s", flush=True)
 
-            await asyncio.gather(*[_confirm(c) for c in candidates[:14]])
-            print(f"dubl timing PHOTO total ({min(len(candidates),14)} шт): "
+            await asyncio.gather(*[_confirm(c) for c in candidates[:10]])
+            print(f"dubl timing PHOTO total ({min(len(candidates),10)} шт): "
                   f"{time.monotonic() - t_photo:.1f}s", flush=True)
 
         # Вердикт для всіх (і коли фото не перевіряли — за силою даних).

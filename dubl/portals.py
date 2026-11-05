@@ -163,27 +163,55 @@ async def _resolve_slug(city: str, portal: str, client: httpx.AsyncClient) -> st
     return ""
 
 
+def _loads_lenient(s: str):
+    """json.loads, а якщо впало — прибираємо JS-токени (undefined / хвостові коми)."""
+    try:
+        return json.loads(s)
+    except Exception:
+        pass
+    try:
+        s2 = re.sub(r':\s*undefined', ":null", s)
+        s2 = re.sub(r",\s*([}\]])", r"\1", s2)
+        return json.loads(s2)
+    except Exception:
+        return None
+
+
+def _ok_items(items) -> bool:
+    return (isinstance(items, list) and bool(items) and isinstance(items[0], dict)
+            and ("beautiful_url" in items[0] or "rooms_count" in items[0]))
+
+
 def _dimria_items(html: str) -> list[dict]:
-    """Дістати картки DOM.RIA. Весь __INITIAL_STATE__ (≈780КБ) часто не є
-    валідним JSON (трапляються JS-токени), тож беремо ЛИШЕ масив
-    "realtyForCatalog":[…] — дані оголошень чисті й парсяться завжди."""
+    """Дістати картки DOM.RIA з __INITIAL_STATE__ у будь-якій формі:
+    (а) = JSON.parse("…") — валідний JSON-рядок; (б) = {…} об'єкт-літерал,
+    з якого беремо лише масив "realtyForCatalog":[…] (решта стану часто
+    містить JS-токени й не парситься цілком)."""
     if not html:
         return []
-    for m in re.finditer(r'"realtyForCatalog"\s*:\s*', html):
-        lb = m.end()
+    # (а) форма JSON.parse("…")
+    m = re.search(r'__INITIAL_STATE__\s*=\s*JSON\.parse\(\s*("(?:[^"\\]|\\.)*")\s*\)', html, re.S)
+    if m:
+        try:
+            data = json.loads(json.loads(m.group(1)))
+            items = (((data or {}).get("catalog") or {}).get("realtyForCatalog")) or []
+            if _ok_items(items):
+                return items
+        except Exception:
+            pass
+    # (б) об'єкт-літерал → масив realtyForCatalog (можливо з JS-токенами)
+    for mm in re.finditer(r'"realtyForCatalog"\s*:\s*', html):
+        lb = mm.end()
         if lb < len(html) and html[lb] == "[":
             arr = _balanced(html, lb)
-            if not arr:
-                continue
-            try:
-                items = json.loads(arr)
-            except Exception:
-                continue
-            if (isinstance(items, list) and items and isinstance(items[0], dict)
-                    and ("beautiful_url" in items[0] or "rooms_count" in items[0])):
-                return items
-    print(f"dubl dimria parse fail: len={len(html)} "
-          f"has_catalog={'realtyForCatalog' in html}", flush=True)
+            if arr:
+                items = _loads_lenient(arr)
+                if _ok_items(items):
+                    return items
+    # Діагностика з контекстом навколо першого realtyForCatalog.
+    idx = html.find("realtyForCatalog")
+    ctx = html[max(0, idx - 8):idx + 40].replace("\n", " ") if idx >= 0 else ""
+    print(f"dubl dimria parse fail: len={len(html)} has_catalog={idx >= 0} ctx={ctx!r}", flush=True)
     return []
 
 
@@ -510,15 +538,19 @@ async def search_olx(subject: dict, limit: int = 60) -> list[dict]:
         return []
     _ensure_ocinka_env()
     try:
-        from app.services.olx_service import find_olx_analogs
+        # Беремо ЛИШЕ картки зі сторінки списку (url + ціна/площа/кімнати з
+        # картки). БЕЗ детального сканування кожного оголошення (воно відкриває
+        # кожну картку через ZenRows — це давало 120–150с). Фінальне
+        # підтвердження робимо по фото у нашому пайплайні.
+        from app.services.olx_service import search_olx as _ocinka_search_olx
     except Exception as error:
         print(f"dubl vip olx import error: {type(error).__name__}: {error}", flush=True)
         return []
+    rooms = _as_int(subject.get("rooms"))
     try:
-        results = await find_olx_analogs(
-            city, otype, subject.get("rooms"), subject.get("area_sqm"),
-            report_id="", max_pages=3, max_candidates=50, screenshots=False,
-            district=subject.get("district"), price_min_uah=None, price_max_uah=None,
+        cards = await _ocinka_search_olx(
+            city, otype, max_pages=1, rooms=rooms,
+            district=subject.get("district"), target_results=40,
             region=subject.get("region"),
         )
     except Exception as error:
@@ -526,23 +558,22 @@ async def search_olx(subject: dict, limit: int = 60) -> list[dict]:
         return []
 
     out = []
-    for r in (results or []):
+    for r in (cards or []):
         out.append({
             "source": "olx",
-            "url": r.get("url") or r.get("link") or "",
+            "url": r.get("url") or "",
             "title": r.get("title") or "",
-            "price_uah": r.get("price_uah") or r.get("price"),
-            "area_sqm": r.get("area_sqm") or r.get("area"),
+            "price_uah": r.get("price_uah"),
+            "area_sqm": r.get("area_sqm"),
             "rooms": r.get("rooms"),
             "floor": r.get("floor"),
-            "address": r.get("address") or "",
+            "address": "",
         })
-    area = subject.get("area_sqm")
-    if area:
-        tol = settings.area_tolerance
-        low, high = area * (1 - tol), area * (1 + tol)
-        out = [x for x in out if not x.get("area_sqm") or low <= float(x["area_sqm"]) <= high]
-    return out
+    try:
+        area = float(subject["area_sqm"]) if subject.get("area_sqm") not in (None, "") else None
+    except (TypeError, ValueError):
+        area = None
+    return _tighten(out, rooms, area)
 
 
 # ---------------------------------------------------------------- M3: фото
@@ -755,7 +786,7 @@ async def confirm_by_photo(object_images: list[tuple[bytes, str]], candidate: di
     """Порівняти фото об'єкта зі скриншотів і фото кандидата через Gemini."""
     if not settings.gemini_api_key:
         return {"match": "no_key", "confidence": 0, "matched": 0}
-    photos = await fetch_listing_photos(candidate.get("url") or "", limit=5)
+    photos = await fetch_listing_photos(candidate.get("url") or "", limit=4)
     if not photos:
         return {"match": "no_photos", "confidence": 0, "matched": 0}
 
