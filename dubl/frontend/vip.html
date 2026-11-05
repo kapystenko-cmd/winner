@@ -79,8 +79,14 @@
     color: var(--fg); background: var(--bg); border: 1.6px solid var(--line); border-radius: var(--radius-sm); padding: 13px 15px; }
   .ta:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
   .ta::placeholder { color: var(--muted); opacity: .7; }
-  .url-in { min-height: 0; margin-bottom: 0; }
-  .url-in + .ta { margin-top: 10px; }
+  .url-wrap { position: relative; margin-top: 16px; }
+  .url-in { min-height: 0; margin-top: 0; margin-bottom: 0; padding-right: 46px; }
+  .url-wrap + .ta { margin-top: 10px; }
+  .url-clear { position: absolute; top: 50%; right: 8px; transform: translateY(-50%);
+    width: 30px; height: 30px; border-radius: 50%; border: none; cursor: pointer;
+    background: var(--track); color: var(--muted); font-size: 1.25rem; line-height: 1;
+    display: grid; place-items: center; transition: background .15s ease, color .15s ease; }
+  .url-clear:hover { background: var(--accent); color: var(--accent-fg); }
 
   .progress { margin-top: 26px; }
   .status { font-size: 0.98rem; color: var(--muted); margin-bottom: 10px; font-variant-numeric: tabular-nums; }
@@ -151,8 +157,11 @@
   <section class="card" aria-label="Пошук за посиланням або текстом оголошення">
     <div class="card-title">Встав посилання або текст оголошення</div>
     <p class="hint">Встав <b>посилання</b> на оголошення — підтягнемо з нього текст і всі фото, звіримо дублі по фото. Можна додати й текст (нижче). Тільки текст без посилання — шукаємо за даними.</p>
-    <input class="ta url-in" id="adurl" type="url" inputmode="url" autocomplete="off"
-           placeholder="https://www.olx.ua/...  або  https://dom.ria.com/...">
+    <div class="url-wrap">
+      <input class="ta url-in" id="adurl" type="url" inputmode="url" autocomplete="off"
+             placeholder="https://www.olx.ua/...  або  https://dom.ria.com/...">
+      <button type="button" class="url-clear" id="urlClear" hidden aria-label="Очистити посилання">×</button>
+    </div>
     <textarea class="ta" id="adtext" rows="6" placeholder="Необов'язково: текст оголошення (опис, параметри), якщо хочеш додати вручну"></textarea>
     <button class="start" id="startText" disabled>Знайти дублі</button>
   </section>
@@ -379,10 +388,15 @@
 
     var adtext = document.getElementById('adtext');
     var adurl = document.getElementById('adurl');
+    var urlClear = document.getElementById('urlClear');
     var startText = document.getElementById('startText');
     function refreshTextBtn() { startText.disabled = !(adtext.value.trim() || adurl.value.trim()); }
+    function refreshUrlClear() { urlClear.hidden = !adurl.value; }
     adtext.addEventListener('input', refreshTextBtn);
-    adurl.addEventListener('input', refreshTextBtn);
+    adurl.addEventListener('input', function () { refreshTextBtn(); refreshUrlClear(); });
+    urlClear.addEventListener('click', function () {
+      adurl.value = ''; refreshUrlClear(); refreshTextBtn(); adurl.focus();
+    });
     startText.addEventListener('click', function () {
       if (startText.disabled) return;
       var txt = adtext.value.trim(), link = adurl.value.trim();
